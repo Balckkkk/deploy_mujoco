@@ -1,6 +1,6 @@
 # deploy_mujoco
 
-基于 MuJoCo 物理引擎的 R2 双足机器人强化学习策略部署与仿真环境。
+基于 MuJoCo 物理引擎的 R2 与 G1 强化学习策略部署及仿真环境。
 
 ## 项目简介
 
@@ -8,7 +8,7 @@
 
 支持：
 
-- TorchScript（`.pt`）和 ONNX（`.onnx`）格式的策略模型
+- R2 TorchScript（`.pt`）和 G1 AME ONNX（`.onnx`）策略部署
 - 手柄（Joystick）实时控制机器人速度指令
 - 关节状态日志记录（CSV 格式，兼容 PlotJuggler）
 - 两种观测历史打包模式（`time` / `term`）
@@ -44,12 +44,14 @@ deploy_mujoco/
 ### 依赖
 
 - Python 3.8+
-- **PyTorch**（策略推理通过 `torch.jit.load` 加载 TorchScript 模型，必须）
+- **PyTorch**（R2 TorchScript 推理）
+- **ONNX Runtime**（G1 AME ONNX 推理）
 - **MuJoCo**（`mujoco` Python 绑定，必须）
 - NumPy、PyYAML（必须）
 - Pygame（手柄控制，可选）
 
-> **说明**：策略加载完全走 `torch.jit.load`，ONNX 文件仅为训练时导出备份，当前不使用 `onnxruntime`，无需安装。
+> **说明**：R2 使用 `torch.jit.load`；G1 AME 使用训练仓库 exporter 生成的 ONNX，并通过
+> `onnxruntime` 推理。
 
 ### 方式一：conda / virtualenv（推荐）
 
@@ -74,7 +76,7 @@ pip install -r requirements.txt
 ### 方式二：直接安装
 
 ```bash
-pip install mujoco torch numpy pyyaml pygame
+pip install mujoco torch onnxruntime numpy pyyaml pygame
 ```
 
 ### 验证安装
@@ -119,6 +121,58 @@ python r2_deploy.py \
   --log-csv deploy_mujoco_logs/my_log.csv \
   --log-duration 30.0
 ```
+
+### 5. G1 AME 策略
+
+AME 部署使用训练仓库 `scripts/rsl_rl/exporter.py` 导出的 ONNX。默认策略为
+`policy/ame1.onnx`，同时提供带全局地形特征分支的 `policy/ame2.onnx`。两个预训练 checkpoint
+使用原始 `0.05 m` 网格：观测为 96 维本体状态加 `33×21×3=2079` 维局部地形坐标。
+
+```bash
+# 无界面核对模型、关节顺序、高程图和策略维度
+python ame_deploy.py --check
+
+# 运行并显示 21x33 高程采样点、打印 z 数值
+python ame_deploy.py --heightmap-debug
+
+# 同时显示从 torso_link 上方 20 m 发出的射线
+python ame_deploy.py --heightmap-debug --heightmap-rays
+
+# 指定 ONNX、速度指令或启用手柄
+python ame_deploy.py --policy /path/to/policy.onnx --cmd 0.5 0.0 0.0
+python ame_deploy.py --joystick
+```
+
+AME 的 29 个观测/动作关节按训练时 PhysX articulation 顺序组织，再通过关节名映射到 MJCF；
+不能直接使用 MJCF 文件中的关节遍历顺序。高程图只对世界地形射线检测，会排除机器人自身几何体。
+AME 默认使用 `assets/g1/mjcf/g1_29dof_ame.xml`：惯量和关节结构保持 G1 29DoF，碰撞体使用
+capsule/sphere 足底与肢体近似，避免三角 mesh 接触和点状足底造成的 sim2sim 失稳。
+默认命令还会复现 PLAY 配置的 heading 控制：目标朝向为 0 rad，使用 0.5 的增益动态生成 yaw-rate；
+显式传入 `--cmd` 或 `--joystick` 时则使用直接速度指令。
+
+训练地形也可以直接从命令行切换。默认 `play_stakes` 对应训练代码
+`G1RoughEnvCfg_PLAY` 的固定梅花桩；其余名称来自 `FINETUNE_ROUGH_TERRAINS_CFG`：
+
+```bash
+# 训练 Play 配置的梅花桩
+python ame_deploy.py --terrain play_stakes --heightmap-debug
+
+# 正/反金字塔楼梯
+python ame_deploy.py --terrain pyramid_stairs --terrain-difficulty 0.5 --heightmap-debug
+python ame_deploy.py --terrain pyramid_stairs_inv --terrain-difficulty 0.5 --heightmap-debug
+
+# 训练中的其他地形
+python ame_deploy.py --terrain stakes1
+python ame_deploy.py --terrain stakes2
+python ame_deploy.py --terrain stakes3
+python ame_deploy.py --terrain hf_gaps
+python ame_deploy.py --terrain stonebridge
+python ame_deploy.py --terrain rails
+```
+
+每块地形为8×8m，水平分辨率0.05m、垂直量化0.005m。`--terrain-difficulty` 范围为
+0到1；`--terrain-seed` 用于复现随机桩高和地面高度。训练中基于 mesh 的正/反金字塔楼梯和
+rails 在 MuJoCo 中使用同尺寸 box 几何，避免 hfield 在垂直边缘产生斜坡观测。
 
 ## 配置说明
 

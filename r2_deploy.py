@@ -13,6 +13,8 @@ print("Using device:", device)
 import yaml
 from collections import deque
 
+from terrain_heightmap import MujocoMid360HeightMap
+
 cmd = np.array([0.5, 0.0, 0.0], dtype=np.float32)
 x_vel_max, y_vel_max, yaw_vel_max = 2.0, 1.0, 1.0
 
@@ -197,7 +199,88 @@ def build_policy_input(frame_stack, num_obs, num_actions, history_mode):
         return np.concatenate(term_groups, axis=0, dtype=np.float32).reshape(1, -1)
     raise ValueError(f"Unsupported history mode: {history_mode}")
 
-def run_simulation(policy_path, config, log_csv_path, log_duration, history_mode):
+def print_heightmap_debug(heightmap_scanner, heights, sim_time):
+    """Print the 187 values as 17 lateral rows by 11 forward columns."""
+    scan = heightmap_scanner.last_scan
+    valid_ratio = float(np.mean(scan["valid"])) if scan is not None else 0.0
+    grid = heights.reshape(
+        heightmap_scanner.config.num_y,
+        heightmap_scanner.config.num_x,
+    )
+    print(
+        f"[HEIGHTMAP] t={sim_time:.2f}s shape={heights.shape} "
+        f"valid={valid_ratio * 100.0:.1f}% "
+        f"min={heights.min():.4f} max={heights.max():.4f} "
+        f"mean={heights.mean():.4f}"
+    )
+    print("[HEIGHTMAP] rows: y=-0.8..0.8m, columns: x=0.1..1.1m")
+    print(np.array2string(grid, precision=4, suppress_small=True, max_line_width=200))
+
+
+def draw_heightmap_debug(viewer, heightmap_scanner, show_ray_lines=False):
+    """Draw ray hits (green), misses (red), and optional downward rays."""
+    scan = heightmap_scanner.last_scan
+    if viewer.user_scn is None or scan is None:
+        return
+
+    starts = scan["ray_starts_w"]
+    hits = scan["hit_points_w_ray_order"]
+    valid = scan["valid_ray_order"]
+    rotation = np.eye(3, dtype=np.float64).reshape(-1)
+    point_size = np.array([0.014, 0.014, 0.014], dtype=np.float64)
+    zero_size = np.zeros(3, dtype=np.float64)
+    valid_rgba = np.array([0.0, 0.9, 0.2, 0.9], dtype=np.float32)
+    miss_rgba = np.array([1.0, 0.1, 0.0, 0.9], dtype=np.float32)
+    ray_rgba = np.array([0.0, 0.55, 1.0, 0.25], dtype=np.float32)
+
+    with viewer.lock():
+        scene = viewer.user_scn
+        scene.ngeom = 0
+        for index in range(len(hits)):
+            if scene.ngeom >= scene.maxgeom:
+                break
+            geom = scene.geoms[scene.ngeom]
+            rgba = valid_rgba if valid[index] else miss_rgba
+            mujoco.mjv_initGeom(
+                geom,
+                mujoco.mjtGeom.mjGEOM_SPHERE,
+                point_size,
+                hits[index],
+                rotation,
+                rgba,
+            )
+            scene.ngeom += 1
+
+            if show_ray_lines and scene.ngeom < scene.maxgeom:
+                geom = scene.geoms[scene.ngeom]
+                mujoco.mjv_initGeom(
+                    geom,
+                    mujoco.mjtGeom.mjGEOM_LINE,
+                    zero_size,
+                    np.zeros(3, dtype=np.float64),
+                    rotation,
+                    ray_rgba,
+                )
+                mujoco.mjv_connector(
+                    geom,
+                    mujoco.mjtGeom.mjGEOM_LINE,
+                    1.0,
+                    starts[index],
+                    hits[index],
+                )
+                scene.ngeom += 1
+
+
+def run_simulation(
+    policy_path,
+    config,
+    log_csv_path,
+    log_duration,
+    history_mode,
+    heightmap_debug=False,
+    heightmap_rays=False,
+    heightmap_print_interval=1.0,
+):
     """
     Run the Mujoco simulation using the provided policy and configuration.
     
@@ -269,6 +352,19 @@ def run_simulation(policy_path, config, log_csv_path, log_duration, history_mode
     d.qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
     d.qpos[actuated_qpos_indices] = default_angles.copy()
     mujoco.mj_forward(m, d)  # Update the simulation state
+
+    # Height map is acquired independently for inspection. It is deliberately
+    # not appended to obs/policy_input yet.
+    heightmap_scanner = MujocoMid360HeightMap(m, d)
+    ground_height = heightmap_scanner.scan()
+    if ground_height.shape != (187,):
+        raise ValueError(f"Height map shape={ground_height.shape}, expected (187,)")
+    initial_valid_ratio = float(np.mean(heightmap_scanner.last_scan["valid"]))
+    print(
+        f"Height map initialized: shape={ground_height.shape}, "
+        f"valid={initial_valid_ratio * 100.0:.1f}%, "
+        f"range=[{ground_height.min():.4f}, {ground_height.max():.4f}]"
+    )
     
     # Initialize frame stack
     frame_stack = deque(maxlen=obs_history_length)
@@ -291,6 +387,7 @@ def run_simulation(policy_path, config, log_csv_path, log_duration, history_mode
             sim_start_time = time.time()
             sim_time = 0.0  # 仿真时间
             last_print_time = sim_start_time
+            last_heightmap_print_time = -np.inf
             while viewer.is_running() and time.time() - sim_start_time < simulation_duration:
                 step_start = time.time()
                 # 计算应该执行的仿真时间与实际时间的对齐
@@ -313,6 +410,15 @@ def run_simulation(policy_path, config, log_csv_path, log_duration, history_mode
                 sim_time = d.time     
                 # Policy inference at lower frequency
                 if counter % control_decimation == 0:
+                    ground_height = heightmap_scanner.scan()
+                    if (
+                        heightmap_debug
+                        and heightmap_print_interval > 0.0
+                        and sim_time - last_heightmap_print_time >= heightmap_print_interval
+                    ):
+                        print_heightmap_debug(heightmap_scanner, ground_height, sim_time)
+                        last_heightmap_print_time = sim_time
+
                     # Create observation
                     qj = d.qpos[actuated_qpos_indices]
                     dqj = d.qvel[actuated_dof_indices]
@@ -343,10 +449,11 @@ def run_simulation(policy_path, config, log_csv_path, log_duration, history_mode
                     # Transform action to target_dof_pos
                     target_dof_pos = action * action_scale + default_angles
                     # target_dof_pos = default_angles
-                # Update viewer
-                # Sync viewer
-                # 优化：减少viewer同步频率以提升性能
+                # Update and sync viewer. Debug geometry only needs rebuilding
+                # when the viewer is going to consume a new scene.
                 if counter % viewer_sync_interval == 0:
+                    if heightmap_debug:
+                        draw_heightmap_debug(viewer, heightmap_scanner, heightmap_rays)
                     viewer.sync()
                 
                 # 改进的时间同步：精确对齐wall-time
@@ -383,6 +490,12 @@ if __name__ == "__main__":
                     help='Path to save joint log CSV')
     parser.add_argument('--log-duration', type=float, default=10.0,
                     help='Simulation-time duration to record joint logs, in seconds')
+    parser.add_argument('--heightmap-debug', action='store_true',
+                    help='Show height-map hit points and print the 17x11 values')
+    parser.add_argument('--heightmap-rays', action='store_true',
+                    help='With --heightmap-debug, also draw all vertical rays')
+    parser.add_argument('--heightmap-print-interval', type=float, default=1.0,
+                    help='Simulation-time interval for printing the height map; <=0 disables printing')
     history_mode_group = parser.add_mutually_exclusive_group()
     history_mode_group.add_argument('--term', dest='history_mode', action='store_const', const='term',
                     help='Pack observation history by term groups (default)')
@@ -397,7 +510,16 @@ if __name__ == "__main__":
     
     try:
         # Run simulation in main thread
-        run_simulation(policy_path, config, args.log_csv, args.log_duration, args.history_mode)
+        run_simulation(
+            policy_path,
+            config,
+            args.log_csv,
+            args.log_duration,
+            args.history_mode,
+            heightmap_debug=args.heightmap_debug,
+            heightmap_rays=args.heightmap_rays,
+            heightmap_print_interval=args.heightmap_print_interval,
+        )
     except KeyboardInterrupt:
         print("\nSimulation interrupted by user")
     finally:

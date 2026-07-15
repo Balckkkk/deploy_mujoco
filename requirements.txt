@@ -1,5 +1,6 @@
 mujoco>=3.0.0
 torch>=2.0.0
+onnxruntime>=1.16.0
 numpy>=1.24.0
 pyyaml>=6.0
 pygame>=2.0.0
