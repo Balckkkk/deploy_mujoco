@@ -1,5 +1,5 @@
 # 
-xml_path: "/home/black/Desktop/openmind/deploy_mujoco/assets/r2_v1_2/mjcf/r2_v1_2.xml"
+xml_path: "/home/black/Code/deploy_mujoco/assets/r2_v1_2/mjcf/r2_v1_2.xml"
 
 # Total simulation time
 simulation_duration: 120.0

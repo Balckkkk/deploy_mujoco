@@ -1,0 +1,17 @@
+{
+  "mode": "vault",
+  "checkpoint": "/home/black/Code/Locomotion/depth/InstinctLab/logs/instinct_rl/g1_perceptive_vault_climb_vae_distill/20260916_000354_g1PerceptiveVaultClimbVaeDistill/model_16000.pt",
+  "checkpoint_iteration": 16000,
+  "simulated_seconds": 14.740000000000904,
+  "wall_seconds": 5.371698040980846,
+  "realtime_factor": 2.744011276797207,
+  "initial_base_x": -6.5191497802734375,
+  "final_base_x": 6.5698854298022376,
+  "final_base_y": 2.1532059413874087,
+  "final_base_z": 0.8394515887588104,
+  "minimum_base_z": 0.7191712750865423,
+  "fell": false,
+  "furthest_active_obstacle_x": 1.7000000476837158,
+  "passed_furthest_obstacle": true,
+  "trajectory": "/home/black/Code/deploy_mujoco/sim2sim_output/vault/trajectory.csv"
+}

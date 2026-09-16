@@ -1,0 +1,50 @@
+{
+  "status": "PASS",
+  "shape_depth": [
+    32,
+    48
+  ],
+  "shape_policy": [
+    1,
+    32,
+    48
+  ],
+  "vertical_fov_degrees": 70.0,
+  "horizontal_fov_degrees": 92.81132645176451,
+  "update_period_seconds": 0.02,
+  "depth_min_m": 1.10741126537323,
+  "depth_max_m": 3.0,
+  "center_depth_m": 1.735764503479004,
+  "center_point_world": [
+    1.4659024825737335,
+    -0.022981105934151015,
+    0.25491543940090744
+  ],
+  "camera_position_world": [
+    0.04812725698,
+    0.015,
+    1.2570303957
+  ],
+  "camera_forward_world": [
+    0.8290375725587473,
+    0.0,
+    -0.559192903465253
+  ],
+  "intrinsic_matrix": [
+    [
+      22.850368107873834,
+      0.0,
+      24.0
+    ],
+    [
+      0.0,
+      22.850368107873834,
+      16.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ]
+}

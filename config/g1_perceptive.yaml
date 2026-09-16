@@ -1,0 +1,145 @@
+# Phase-1 model/control contract for the perceptive vault-climb policy.
+model_path: assets/g1/mjcf/g1_29dof_perceptive.xml
+isaac_reference_path: config/g1_perceptive_isaac_reference.json
+source_urdf_path: /home/black/Code/Locomotion/depth/InstinctLab/source/instinctlab/instinctlab/assets/resources/unitree_g1/urdf/g1_29dof_torsobase_popsicle.urdf
+policy_checkpoint: /home/black/Code/Locomotion/depth/InstinctLab/logs/instinct_rl/g1_perceptive_vault_climb_vae_distill/20260916_000354_g1PerceptiveVaultClimbVaeDistill/model_16000.pt
+motion_files:
+  vault: /home/black/Code/Locomotion/depth/InstinctLab/source/instinctlab/instinctlab/tasks/shadowing/beyondmimic/config/g1/motions/vault/g1_speed_vault_retargeted.npz
+  climb: /home/black/Code/Locomotion/depth/InstinctLab/source/instinctlab/instinctlab/tasks/shadowing/beyondmimic/config/g1/motions/climb/g1_speed_climb_retargeted.npz
+
+base_body: torso_link
+base_joint: floating_base_joint
+home_keyframe: home
+base_position: [0.0, 0.0, 0.82]
+
+sim_dt: 0.005
+control_decimation: 4
+control_dt: 0.02
+
+policy:
+  depth_shape: [1, 32, 48]
+  proprio_dim: 96
+  observation_dim: 1632
+  action_dim: 29
+  normalizer_epsilon: 0.01
+  action_scale: 1.0
+
+depth_camera:
+  name: depth_camera
+  parent_body: torso_link
+  position: [0.04812725697526883, 0.015, 0.4370303957245772]
+  convention: world
+  pitch_degrees: 34.0
+  width: 48
+  height: 32
+  vertical_fov_degrees: 70.0
+  horizontal_fov_degrees: 92.81132645176451
+  update_period: 0.02
+  min_distance: 0.05
+  depth_range: [0.0, 3.0]
+  normalize: true
+  output_range: [0.0, 1.0]
+  data_type: distance_to_image_plane
+  visible_geom_groups: [0, 2]
+
+obstacle_scene:
+  ground:
+    name: ground
+    size: [50.0, 50.0, 0.1]
+    friction: [1.0, 0.005, 0.0001]
+    rgba: [0.32, 0.34, 0.37, 1.0]
+  lighting:
+    headlight:
+      ambient: [0.25, 0.25, 0.25]
+      diffuse: [0.75, 0.75, 0.75]
+      specular: [0.25, 0.25, 0.25]
+    lights:
+      - name: key_light
+        position: [2.0, -4.0, 8.0]
+        direction: [-0.25, 0.35, -1.0]
+        ambient: [0.12, 0.12, 0.12]
+        diffuse: [0.85, 0.82, 0.78]
+        specular: [0.25, 0.25, 0.25]
+        cast_shadow: true
+      - name: fill_light
+        position: [-4.0, 5.0, 6.0]
+        direction: [0.35, -0.45, -1.0]
+        ambient: [0.08, 0.08, 0.10]
+        diffuse: [0.45, 0.50, 0.60]
+        specular: [0.10, 0.10, 0.12]
+        cast_shadow: false
+  obstacles:
+    vault:
+      body_name: vault_box
+      geom_name: vault_box_geom
+      size: [0.4000000059604645, 10.0, 0.6000000238418579]
+      position: [1.7000000476837158, 0.5, 0.054999999701976776]
+      hidden_position: [1000.0, 1000.0, -100.0]
+      friction: [0.5, 0.005, 0.0001]
+      rgba: [0.9, 0.35, 0.05, 1.0]
+      randomization:
+        x: [-0.05, 0.05]
+        y: [-0.05, 0.05]
+        z: [0.0, 0.0]
+        roll: [0.0, 0.0]
+        pitch: [0.0, 0.0]
+        yaw: [-0.7853981633974483, 0.7853981633974483]
+    climb:
+      body_name: climb_box
+      geom_name: climb_box_geom
+      size: [0.3559550642967224, 10.0, 0.7044943571090698]
+      position: [5.229531764984131, 0.0, 0.3522471785545349]
+      sequential_position: [7.0, 0.0, 0.3522471785545349]
+      hidden_position: [1000.0, 1000.0, -100.0]
+      friction: [0.5, 0.005, 0.0001]
+      rgba: [0.0, 0.6, 0.9, 1.0]
+      randomization:
+        x: [-0.05, 0.05]
+        y: [-0.05, 0.05]
+        z: [0.0, 0.0]
+        roll: [0.0, 0.0]
+        pitch: [0.0, 0.0]
+        yaw: [-0.7853981633974483, 0.7853981633974483]
+
+# This is the resolved Isaac/PhysX articulation order. MuJoCo state and actuator
+# arrays must always be name-mapped to this order before policy use.
+policy_joint_names:
+  - left_shoulder_pitch_joint
+  - right_shoulder_pitch_joint
+  - waist_pitch_joint
+  - left_shoulder_roll_joint
+  - right_shoulder_roll_joint
+  - waist_roll_joint
+  - left_shoulder_yaw_joint
+  - right_shoulder_yaw_joint
+  - waist_yaw_joint
+  - left_elbow_joint
+  - right_elbow_joint
+  - left_hip_pitch_joint
+  - right_hip_pitch_joint
+  - left_wrist_roll_joint
+  - right_wrist_roll_joint
+  - left_hip_roll_joint
+  - right_hip_roll_joint
+  - left_wrist_pitch_joint
+  - right_wrist_pitch_joint
+  - left_hip_yaw_joint
+  - right_hip_yaw_joint
+  - left_wrist_yaw_joint
+  - right_wrist_yaw_joint
+  - left_knee_joint
+  - right_knee_joint
+  - left_ankle_pitch_joint
+  - right_ankle_pitch_joint
+  - left_ankle_roll_joint
+  - right_ankle_roll_joint
+
+stand_test:
+  duration: 3.0
+  # Test-only stiffness scaling for a passive constant-pose smoke test. The
+  # deployment controller must use the unscaled Isaac gains from the JSON.
+  gain_multiplier: 8.0
+  minimum_base_height: 0.55
+  maximum_tilt_radians: 0.35
+  maximum_joint_error_radians: 0.35
+  ground_friction: [1.0, 0.005, 0.0001]

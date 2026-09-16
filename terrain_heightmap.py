@@ -33,6 +33,9 @@ class Mid360HeightMapConfig:
     z_compensation: float = 0.93
     miss_local_z: float = 0.0
     round_decimals: int = 4
+    training_height_offset: float = 0.0
+    training_height_scale: float = 1.0
+    training_observation_clip: float = 100.0
     terrain_geom_groups: tuple[int, ...] = (0,)
     static_only: bool = True
 
@@ -45,6 +48,8 @@ class Mid360HeightMapConfig:
         # the ray origin; reported heights remain relative to the body.
         if self.ray_start_height <= 0.0:
             raise ValueError("ray_start_height must be positive")
+        if self.training_observation_clip <= 0.0:
+            raise ValueError("training_observation_clip must be positive")
 
     @staticmethod
     def _point_count(axis_min: float, axis_max: float, resolution: float) -> int:
@@ -77,6 +82,13 @@ class MujocoMid360HeightMap:
 
     Only yaw is used to rotate the sampling rectangle. Roll and pitch do not
     tilt the scan plane or the downward ray direction.
+
+    ``scan_training_observation()`` uses the R2 LeggedLab training semantics::
+
+        height = (body_world_z - terrain_world_z - height_offset) * height_scale
+
+    The training vector uses the same 187-point grid and Isaac Lab's default
+    ``GridPatternCfg(ordering="xy")`` order: forward x changes fastest.
     """
 
     def __init__(
@@ -205,6 +217,27 @@ class MujocoMid360HeightMap:
         heights = self._to_mid360_output_order(heights_ray_order)
         heights = np.round(heights, cfg.round_decimals).astype(np.float32)
 
+        # Match legged_lab/envs/base/base_env.py. In the Isaac Lab version used
+        # by the training project, RayCasterData.pos_w is the tracked parent
+        # body position; the (0.6, 0.0, 20.0) ray-pattern offset only moves ray
+        # origins and does not enter this observation formula.
+        training_heights_ray_order = np.full(
+            cfg.num_heights,
+            -cfg.training_observation_clip,
+            dtype=np.float64,
+        )
+        training_heights_ray_order[valid_ray_order] = (
+            body_pos_w[2]
+            - hit_points_w_ray_order[valid_ray_order, 2]
+            - cfg.training_height_offset
+        ) * cfg.training_height_scale
+        training_heights = self._to_mid360_output_order(training_heights_ray_order)
+        training_heights = np.clip(
+            training_heights,
+            -cfg.training_observation_clip,
+            cfg.training_observation_clip,
+        ).astype(np.float32)
+
         self.last_scan = {
             "body_pos_w": body_pos_w,
             "ray_starts_w": ray_starts_w,
@@ -215,6 +248,12 @@ class MujocoMid360HeightMap:
             "valid": self._to_mid360_output_order(valid_ray_order),
             "local_z": self._to_mid360_output_order(local_z_ray_order),
             "heights": heights.copy(),
+            "training_heights": training_heights,
             "grid_local_xy": self.output_grid_xy,
         }
         return heights
+
+    def scan_training_observation(self) -> np.ndarray:
+        """Cast rays and return the observation exactly as defined in training."""
+        self.scan()
+        return self.last_scan["training_heights"].copy()

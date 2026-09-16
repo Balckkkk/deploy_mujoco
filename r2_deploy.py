@@ -13,10 +13,12 @@ print("Using device:", device)
 import yaml
 from collections import deque
 
-from terrain_heightmap import MujocoMid360HeightMap
+from terrain_heightmap import Mid360HeightMapConfig, MujocoMid360HeightMap
 
-cmd = np.array([0.5, 0.0, 0.0], dtype=np.float32)
-x_vel_max, y_vel_max, yaw_vel_max = 2.0, 1.0, 1.0
+cmd = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+# The 0714 policy was trained only for forward motion in [0.0, 0.5] m/s.
+# Keep the full forward stick travel usable and suppress untrained commands.
+x_vel_max, y_vel_max, yaw_vel_max = 0.5, 0.0, 0.0
 
 joystick_use = True
 joystick_opened = False
@@ -68,6 +70,19 @@ def get_gravity_orientation(quaternion):
 def pd_control(target_q, q, kp, target_dq, dq, kd):
     """Calculates torques from position commands"""
     return (target_q - q) * kp + (target_dq - dq) * kd
+
+def get_body_angular_velocity(model, data, body_id):
+    """Return angular velocity expressed in the base body frame."""
+    local_velocity = np.zeros(6, dtype=np.float64)
+    mujoco.mj_objectVelocity(
+        model,
+        data,
+        mujoco.mjtObj.mjOBJ_BODY,
+        body_id,
+        local_velocity,
+        1,
+    )
+    return local_velocity[:3]
 
 def load_config(args):
     """Load configuration from yaml file"""
@@ -182,12 +197,15 @@ def save_joint_log_csv(log_csv_path, joint_names, log_rows):
     print(f"Joint log samples: {len(valid_rows)}, columns: {len(header)}, duration: {last_time:.6f}s")
 
 def build_policy_input(frame_stack, num_obs, num_actions, history_mode):
-    """Build policy input from stacked single-frame observations."""
+    """Build base-observation history followed by the latest radar scan."""
     stacked_obs = np.asarray(frame_stack, dtype=np.float32)
+    frames = stacked_obs.reshape(-1, num_obs)
+    base_obs_dim = 9 + 3 * num_actions
+    latest_radar = frames[-1, base_obs_dim:num_obs]
     if history_mode == "time":
-        return stacked_obs.reshape(1, -1)
+        base_history = frames[:, :base_obs_dim].reshape(-1)
+        return np.concatenate([base_history, latest_radar], dtype=np.float32).reshape(1, -1)
     if history_mode == "term":
-        frames = stacked_obs.reshape(-1, num_obs)
         term_groups = [
             frames[:, 0:3].reshape(-1),
             frames[:, 3:6].reshape(-1),
@@ -195,6 +213,7 @@ def build_policy_input(frame_stack, num_obs, num_actions, history_mode):
             frames[:, 9 : 9 + num_actions].reshape(-1),
             frames[:, 9 + num_actions : 9 + 2 * num_actions].reshape(-1),
             frames[:, 9 + 2 * num_actions : 9 + 3 * num_actions].reshape(-1),
+            latest_radar,
         ]
         return np.concatenate(term_groups, axis=0, dtype=np.float32).reshape(1, -1)
     raise ValueError(f"Unsupported history mode: {history_mode}")
@@ -304,11 +323,43 @@ def run_simulation(
     dof_vel_scale = config["dof_vel_scale"]
     action_scale = config["action_scale"]
     cmd_scale = np.array(config["cmd_scale"], dtype=np.float32)
+    command_range = config.get(
+        "command_range",
+        {
+            "lin_vel_x": [-0.6, 1.0],
+            "lin_vel_y": [-0.5, 0.5],
+            "ang_vel_z": [-1.0, 1.0],
+        },
+    )
+    command_min = np.array(
+        [
+            command_range["lin_vel_x"][0],
+            command_range["lin_vel_y"][0],
+            command_range["ang_vel_z"][0],
+        ],
+        dtype=np.float32,
+    )
+    command_max = np.array(
+        [
+            command_range["lin_vel_x"][1],
+            command_range["lin_vel_y"][1],
+            command_range["ang_vel_z"][1],
+        ],
+        dtype=np.float32,
+    )
     base_init_pos = np.array(config.get("base_init_pos", [0.0, 0.0, 0.67]), dtype=np.float32)
     
     num_actions = config["num_actions"]
     num_obs = config["num_obs"]
     obs_history_length = config.get("obs_history_length", 10)
+    base_obs_dim = 9 + 3 * num_actions
+    radar_obs_dim = int(config.get("radar_obs_dim", num_obs - base_obs_dim))
+    clip_observations = float(config.get("clip_observations", 100.0))
+    if radar_obs_dim < 0 or num_obs != base_obs_dim + radar_obs_dim:
+        raise ValueError(
+            "Observation size mismatch: "
+            f"num_obs={num_obs}, base_obs_dim={base_obs_dim}, radar_obs_dim={radar_obs_dim}"
+        )
     
     # Initialize context variables
     action = np.zeros(num_actions, dtype=np.float32)
@@ -353,12 +404,25 @@ def run_simulation(
     d.qpos[actuated_qpos_indices] = default_angles.copy()
     mujoco.mj_forward(m, d)  # Update the simulation state
 
-    # Height map is acquired independently for inspection. It is deliberately
-    # not appended to obs/policy_input yet.
-    heightmap_scanner = MujocoMid360HeightMap(m, d)
-    ground_height = heightmap_scanner.scan()
-    if ground_height.shape != (187,):
-        raise ValueError(f"Height map shape={ground_height.shape}, expected (187,)")
+    # Match the LeggedLab training scanner: a 1.0 x 1.6 m grid centered 0.6 m
+    # ahead of base_link, vertical rays starting 20 m above it, and an
+    # observation of (base_world_z - hit_world_z - offset) * scale.  The 0714
+    # R2 policy was trained with offset=0.5 and scale=1.0.
+    heightmap_scanner = MujocoMid360HeightMap(
+        m,
+        d,
+        config=Mid360HeightMapConfig(
+            ray_start_height=float(config.get("height_scan_ray_start_height", 20.0)),
+            training_height_offset=float(config.get("height_scan_offset", 0.0)),
+            training_height_scale=float(config.get("height_scan_scale", 1.0)),
+            training_observation_clip=clip_observations,
+        ),
+    )
+    ground_height = heightmap_scanner.scan_training_observation()
+    if ground_height.shape != (radar_obs_dim,):
+        raise ValueError(
+            f"Height map shape={ground_height.shape}, expected ({radar_obs_dim},)"
+        )
     initial_valid_ratio = float(np.mean(heightmap_scanner.last_scan["valid"]))
     print(
         f"Height map initialized: shape={ground_height.shape}, "
@@ -375,7 +439,7 @@ def run_simulation(
     print_interval = 2.0  # 每2秒打印一次时间同步状态
     # Load policy
     print("Loading policy...")
-    policy = torch.jit.load(policy_path)
+    policy = torch.jit.load(policy_path, map_location=device).to(device).eval()
 
     log_rows = []
     log_start_time = d.time
@@ -410,7 +474,7 @@ def run_simulation(
                 sim_time = d.time     
                 # Policy inference at lower frequency
                 if counter % control_decimation == 0:
-                    ground_height = heightmap_scanner.scan()
+                    ground_height = heightmap_scanner.scan_training_observation()
                     if (
                         heightmap_debug
                         and heightmap_print_interval > 0.0
@@ -423,7 +487,7 @@ def run_simulation(
                     qj = d.qpos[actuated_qpos_indices]
                     dqj = d.qvel[actuated_dof_indices]
                     quat = d.qpos[3:7]
-                    omega = d.qvel[3:6]
+                    omega = get_body_angular_velocity(m, d, heightmap_scanner.body_id)
                     
                     qj = (qj - default_angles) * dof_pos_scale
                     dqj = dqj * dof_vel_scale
@@ -432,17 +496,26 @@ def run_simulation(
                     
                     obs[:3] = omega
                     obs[3:6] = gravity_orientation
-                    obs[6:9] = cmd * cmd_scale
+                    obs[6:9] = np.clip(cmd, command_min, command_max) * cmd_scale
                     obs[9 : 9 + num_actions] = qj[xml_to_policy]
                     obs[9 + num_actions : 9 + 2 * num_actions] = dqj[xml_to_policy]
                     obs[9 + 2 * num_actions : 9 + 3 * num_actions] = action[xml_to_policy]
+                    obs[base_obs_dim : base_obs_dim + radar_obs_dim] = ground_height
                     
                     frame_stack.append(obs.copy())
                     policy_input = build_policy_input(frame_stack, num_obs, num_actions, history_mode)
-                    obs_tensor = torch.from_numpy(policy_input)
+                    np.clip(
+                        policy_input,
+                        -clip_observations,
+                        clip_observations,
+                        out=policy_input,
+                    )
+                    obs_tensor = torch.from_numpy(policy_input).to(device)
                     
                     # Policy inference
-                    action = policy(obs_tensor).detach().numpy().squeeze()
+                    with torch.inference_mode():
+                        action = policy(obs_tensor).cpu().numpy().squeeze()
+                    action = np.clip(action, -100.0, 100.0)
                     action = action[policy_to_xml]
                     # action = np.zeros_like(action)  # 临时屏蔽动作输出，保持默认姿态
                     
@@ -454,6 +527,7 @@ def run_simulation(
                 if counter % viewer_sync_interval == 0:
                     if heightmap_debug:
                         draw_heightmap_debug(viewer, heightmap_scanner, heightmap_rays)
+                        # pass
                     viewer.sync()
                 
                 # 改进的时间同步：精确对齐wall-time
@@ -477,14 +551,14 @@ def run_simulation(
                     last_print_time = time.time()
     finally:
         #暂时先关闭这个功能
-        save_joint_log_csv(log_csv_path, joint_names_xml, log_rows)
+        # save_joint_log_csv(log_csv_path, joint_names_xml, log_rows)
         pass
     
     print("Simulation completed!")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='rw_25dof deploy mujoco')
-    parser.add_argument('--policy', type=str, default="checkpoint/policy.pt",
+    parser.add_argument('--policy', type=str, default=None,
                     help='Direct path to policy file (overrides config file)')
     parser.add_argument('--log-csv', type=str, default="deploy_mujoco_logs/joint_log.csv",
                     help='Path to save joint log CSV')
