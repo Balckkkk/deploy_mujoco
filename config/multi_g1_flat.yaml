@@ -1,0 +1,239 @@
+# MuJoCo sim2sim configuration for the MultiModalWBC multi_g1_flat policy.
+model_path: assets/g1/mjcf/g1_29dof_ame.xml
+policy_path: policy/multi_g1_flat_2026-09-16_13-41-11/policy.onnx
+motion_dir: /home/ubuntu/code/MultiModalWBC/datasets/extended_datasets/lafan1_dataset/g1/train
+output_dir: sim2sim_output/multi_g1_flat
+
+simulation_duration: 120.0
+simulation_dt: 0.005
+control_decimation: 4
+terrain: flat
+terrain_difficulty: 0.5
+terrain_seed: 42
+scene:
+  ground:
+    size: [60.0, 60.0, 0.05]
+    friction: [1.0, 0.005, 0.0001]
+    rgba: [0.34, 0.36, 0.38, 1.0]
+  lighting:
+    headlight:
+      ambient: [0.25, 0.25, 0.25]
+      diffuse: [0.75, 0.75, 0.75]
+      specular: [0.25, 0.25, 0.25]
+    lights:
+      - name: key_light
+        position: [2.5, -4.0, 6.0]
+        direction: [-0.35, 0.45, -1.0]
+        ambient: [0.12, 0.12, 0.12]
+        diffuse: [0.85, 0.82, 0.78]
+        specular: [0.25, 0.25, 0.25]
+        cast_shadow: true
+      - name: fill_light
+        position: [-4.0, 4.0, 5.0]
+        direction: [0.45, -0.35, -1.0]
+        ambient: [0.08, 0.08, 0.10]
+        diffuse: [0.45, 0.50, 0.60]
+        specular: [0.10, 0.10, 0.12]
+        cast_shadow: false
+base_body: pelvis
+anchor_body_index: 0
+start_frame: 0
+loop_motion: true
+realtime: true
+
+num_actions: 29
+action_clip: [-10.0, 10.0]
+observation_terms:
+  command: 58
+  motion_anchor_ori_b: 6
+  base_ang_vel: 3
+  joint_pos: 29
+  joint_vel: 29
+  actions: 29
+
+# Isaac/PhysX articulation order used by MultiModalWBC joint_pos, joint_vel,
+# actions, and the exported ONNX observation/action tensors.
+policy_joints:
+  - left_hip_pitch_joint
+  - right_hip_pitch_joint
+  - waist_yaw_joint
+  - left_hip_roll_joint
+  - right_hip_roll_joint
+  - waist_roll_joint
+  - left_hip_yaw_joint
+  - right_hip_yaw_joint
+  - waist_pitch_joint
+  - left_knee_joint
+  - right_knee_joint
+  - left_shoulder_pitch_joint
+  - right_shoulder_pitch_joint
+  - left_ankle_pitch_joint
+  - right_ankle_pitch_joint
+  - left_shoulder_roll_joint
+  - right_shoulder_roll_joint
+  - left_ankle_roll_joint
+  - right_ankle_roll_joint
+  - left_shoulder_yaw_joint
+  - right_shoulder_yaw_joint
+  - left_elbow_joint
+  - right_elbow_joint
+  - left_wrist_roll_joint
+  - right_wrist_roll_joint
+  - left_wrist_pitch_joint
+  - right_wrist_pitch_joint
+  - left_wrist_yaw_joint
+  - right_wrist_yaw_joint
+
+default_joint_pos_rules:
+  - pattern: .*_hip_pitch_joint
+    value: -0.312
+  - pattern: .*_knee_joint
+    value: 0.669
+  - pattern: .*_ankle_pitch_joint
+    value: -0.363
+  - pattern: .*_elbow_joint
+    value: 0.6
+  - pattern: left_shoulder_roll_joint
+    value: 0.2
+  - pattern: left_shoulder_pitch_joint
+    value: 0.2
+  - pattern: right_shoulder_roll_joint
+    value: -0.2
+  - pattern: right_shoulder_pitch_joint
+    value: 0.2
+
+stiffness_rules:
+  - pattern: .*_hip_pitch_joint
+    value: 40.17923847137318
+  - pattern: .*_hip_roll_joint
+    value: 99.09842777666113
+  - pattern: .*_hip_yaw_joint
+    value: 40.17923847137318
+  - pattern: .*_knee_joint
+    value: 99.09842777666113
+  - pattern: .*_ankle_pitch_joint
+    value: 28.50124619574858
+  - pattern: .*_ankle_roll_joint
+    value: 28.50124619574858
+  - pattern: waist_roll_joint
+    value: 28.50124619574858
+  - pattern: waist_pitch_joint
+    value: 28.50124619574858
+  - pattern: waist_yaw_joint
+    value: 40.17923847137318
+  - pattern: .*_shoulder_pitch_joint
+    value: 14.25062309787429
+  - pattern: .*_shoulder_roll_joint
+    value: 14.25062309787429
+  - pattern: .*_shoulder_yaw_joint
+    value: 14.25062309787429
+  - pattern: .*_elbow_joint
+    value: 14.25062309787429
+  - pattern: .*_wrist_roll_joint
+    value: 14.25062309787429
+  - pattern: .*_wrist_pitch_joint
+    value: 16.77832748089279
+  - pattern: .*_wrist_yaw_joint
+    value: 16.77832748089279
+
+damping_rules:
+  - pattern: .*_hip_pitch_joint
+    value: 2.5578897650279457
+  - pattern: .*_hip_roll_joint
+    value: 6.3088018534966395
+  - pattern: .*_hip_yaw_joint
+    value: 2.5578897650279457
+  - pattern: .*_knee_joint
+    value: 6.3088018534966395
+  - pattern: .*_ankle_pitch_joint
+    value: 1.814445686584846
+  - pattern: .*_ankle_roll_joint
+    value: 1.814445686584846
+  - pattern: waist_roll_joint
+    value: 1.814445686584846
+  - pattern: waist_pitch_joint
+    value: 1.814445686584846
+  - pattern: waist_yaw_joint
+    value: 2.5578897650279457
+  - pattern: .*_shoulder_pitch_joint
+    value: 0.907222843292423
+  - pattern: .*_shoulder_roll_joint
+    value: 0.907222843292423
+  - pattern: .*_shoulder_yaw_joint
+    value: 0.907222843292423
+  - pattern: .*_elbow_joint
+    value: 0.907222843292423
+  - pattern: .*_wrist_roll_joint
+    value: 0.907222843292423
+  - pattern: .*_wrist_pitch_joint
+    value: 1.06814150219
+  - pattern: .*_wrist_yaw_joint
+    value: 1.06814150219
+
+effort_limit_rules:
+  - pattern: .*_hip_yaw_joint
+    value: 88.0
+  - pattern: .*_hip_roll_joint
+    value: 139.0
+  - pattern: .*_hip_pitch_joint
+    value: 88.0
+  - pattern: .*_knee_joint
+    value: 139.0
+  - pattern: .*_ankle_pitch_joint
+    value: 50.0
+  - pattern: .*_ankle_roll_joint
+    value: 50.0
+  - pattern: waist_roll_joint
+    value: 50.0
+  - pattern: waist_pitch_joint
+    value: 50.0
+  - pattern: waist_yaw_joint
+    value: 88.0
+  - pattern: .*_shoulder_pitch_joint
+    value: 25.0
+  - pattern: .*_shoulder_roll_joint
+    value: 25.0
+  - pattern: .*_shoulder_yaw_joint
+    value: 25.0
+  - pattern: .*_elbow_joint
+    value: 25.0
+  - pattern: .*_wrist_roll_joint
+    value: 25.0
+  - pattern: .*_wrist_pitch_joint
+    value: 5.0
+  - pattern: .*_wrist_yaw_joint
+    value: 5.0
+
+armature_rules:
+  - pattern: .*_hip_pitch_joint
+    value: 0.01017752
+  - pattern: .*_hip_roll_joint
+    value: 0.025101925
+  - pattern: .*_hip_yaw_joint
+    value: 0.01017752
+  - pattern: .*_knee_joint
+    value: 0.025101925
+  - pattern: .*_ankle_pitch_joint
+    value: 0.00721945
+  - pattern: .*_ankle_roll_joint
+    value: 0.00721945
+  - pattern: waist_roll_joint
+    value: 0.00721945
+  - pattern: waist_pitch_joint
+    value: 0.00721945
+  - pattern: waist_yaw_joint
+    value: 0.01017752
+  - pattern: .*_shoulder_pitch_joint
+    value: 0.003609725
+  - pattern: .*_shoulder_roll_joint
+    value: 0.003609725
+  - pattern: .*_shoulder_yaw_joint
+    value: 0.003609725
+  - pattern: .*_elbow_joint
+    value: 0.003609725
+  - pattern: .*_wrist_roll_joint
+    value: 0.003609725
+  - pattern: .*_wrist_pitch_joint
+    value: 0.00425
+  - pattern: .*_wrist_yaw_joint
+    value: 0.00425
