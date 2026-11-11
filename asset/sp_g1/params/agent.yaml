@@ -1,0 +1,92 @@
+buffer_steps: 1000
+utd: 0.4
+warmup_steps: 64
+goal_frames: 10
+hist: 8
+wm_window: 8
+wm_batches: 10
+wm_batch: 2048
+wm_failure_frac: 0.25
+wm_failure_horizon: 16
+wm_holdout_envs: 0.1
+wm_only_iters: 500
+vision: scan
+latent_windows: 2048
+latent_weight: 1.0
+latent_recon_images: 512
+latent_recon_weight: 1.0
+latent_policy_grad: 0.0
+aux_recon_weight: 0.0
+aux_recon_images: 2048
+aux_value_weight: 0.0
+aux_value_images: 8192
+aux_value_anneal_start: -1
+aux_value_anneal_end: -1
+fail_head: true
+fail_head_warmup_iters: 300
+fail_windows: 512
+fail_clip: 0.95
+fail_pos_weight: 1.0
+resume_init_new_heads: false
+horizon: 32
+pi_batch: 7680
+gamma: 0.99
+lam: 0.95
+action_noise: 0.1
+critic_epochs: 5
+critic_minibatches: 4
+no_critic: false
+lr: 0.0002
+lr_decay_iters: 250000
+lr_final_ratio: 0.03
+amp: bf16
+compile: true
+compile_policy: true
+policy_autocast: false
+checkpoint_imagination: false
+render_robot: true
+heightmap_resolution: 0.05
+heightmap_cache_dir: ~/.cache/instinct_mj/supermimic_heightmaps
+seed: 0
+device: cuda:0
+num_steps_per_env: null
+max_iterations: 80000
+policy:
+  class_name: methods.motion_encoder_actor:MotionEncoderActorCritic
+  init_noise_std: 1.0
+  actor_hidden_dims:
+  - 2048
+  - 1024
+  - 512
+  - 256
+  critic_hidden_dims:
+  - 512
+  - 256
+  - 128
+  activation: elu
+  num_moe_experts: null
+  moe_gate_hidden_dims: null
+  encoder_configs: null
+  critic_encoder_configs: null
+  vae_encoder_kwargs: null
+  vae_decoder_kwargs: null
+  vae_latent_size: null
+  vae_input_subobs_components: null
+  vae_aux_subobs_components: null
+algorithm: null
+normalizers:
+  policy:
+    class_name: EmpiricalNormalization
+  critic:
+    class_name: EmpiricalNormalization
+save_interval: 1000
+log_interval: 25
+experiment_name: perspmimic_scan
+run_name: supermimic_GPUGPU-93e7dd53-6aae-5da8-cd9b-61afde03cd12
+resume: true
+load_run: /home/ubuntu/data/perspmimic/logs/perspmimic_v5_motionencoder_scan_l40_20261104_fresh_80k
+load_checkpoint: model_35000\.pt
+ckpt_manipulator: null
+ckpt_manipulator_kwargs: {}
+policy_observation_group: policy
+critic_observation_group: critic

@@ -1,0 +1,124 @@
+# MuJoCo sim2sim configuration for RW skater_v2 velocity policies (rw_lab Rw-Lab-Skater_* tasks).
+# Model copied from rw_mode/skater_v2 (commit 2dba443); policies copied from rw_policy/skater.
+model_path: assets/skater_v2/mjcf/skater_v2.xml
+output_dir: sim2sim_output/rw_skater
+
+# Selected with --policy-name; --policy overrides the path. command_ranges are the
+# training ranges from each policy's params/env.yaml and clip keyboard/joystick input.
+default_policy: push_gait
+policies:
+  push_gait:
+    path: policy/skater_push_gait_2026-04-21_13-12-53/policy.onnx
+    command_ranges:
+      lin_vel_x: [-0.1, 0.5]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_z: [-0.5, 0.5]
+  swizzle:
+    path: policy/skater_swizzle_2026-04-17_11-41-12/policy.onnx
+    command_ranges:
+      lin_vel_x: [-0.6, 0.6]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_z: [-0.5, 0.5]
+
+simulation_duration: 120.0
+simulation_dt: 0.005
+control_decimation: 4
+realtime: true
+initial_command: [0.0, 0.0, 0.0]
+command_step: [0.1, 0.1, 0.1]
+init_base_pos: [0.0, 0.0, 0.665]
+
+num_actions: 25
+history_length: 5
+action_scale: 0.25
+obs_scales:
+  base_ang_vel: 0.2
+  projected_gravity: 1.0
+  velocity_commands: 1.0
+  joint_pos: 1.0
+  joint_vel: 0.05
+  last_action: 1.0
+
+# Fall detection used by --headless summaries.
+fall_height: 0.35
+fall_tilt_deg: 60.0
+
+# Isaac/PhysX articulation order of the 25 non-wheel joints, used by joint_pos,
+# joint_vel, last_action, and the policy output. Wheel joints are passive.
+policy_joints:
+  - left_hip_pitch_joint
+  - right_hip_pitch_joint
+  - waist_yaw_joint
+  - left_hip_roll_joint
+  - right_hip_roll_joint
+  - waist_pitch_joint
+  - left_hip_yaw_joint
+  - right_hip_yaw_joint
+  - head_joint
+  - left_shoulder_pitch_joint
+  - right_shoulder_pitch_joint
+  - left_knee_joint
+  - right_knee_joint
+  - left_shoulder_roll_joint
+  - right_shoulder_roll_joint
+  - left_ankle_pitch_joint
+  - right_ankle_pitch_joint
+  - left_shoulder_yaw_joint
+  - right_shoulder_yaw_joint
+  - left_ankle_roll_joint
+  - right_ankle_roll_joint
+  - left_elbow_joint
+  - right_elbow_joint
+  - left_wrist_yaw_joint
+  - right_wrist_yaw_joint
+
+# scene.robot.init_state.joint_pos from params/env.yaml. First matching rule wins.
+default_joint_pos_rules:
+  - {pattern: left_hip_pitch_joint, value: -0.280685}
+  - {pattern: right_hip_pitch_joint, value: 0.280685}
+  - {pattern: left_hip_roll_joint, value: -0.019302}
+  - {pattern: right_hip_roll_joint, value: 0.019302}
+  - {pattern: left_hip_yaw_joint, value: 0.138407}
+  - {pattern: right_hip_yaw_joint, value: -0.138407}
+  - {pattern: left_knee_joint, value: -0.550578}
+  - {pattern: right_knee_joint, value: 0.550578}
+  - {pattern: left_ankle_pitch_joint, value: -0.305609}
+  - {pattern: right_ankle_pitch_joint, value: 0.305609}
+  - {pattern: left_ankle_roll_joint, value: 0.00223767}
+  - {pattern: right_ankle_roll_joint, value: -0.00223767}
+  - {pattern: left_shoulder_yaw_joint, value: -1.57}
+  - {pattern: right_shoulder_yaw_joint, value: 1.57}
+  - {pattern: left_elbow_joint, value: -0.2}
+  - {pattern: right_elbow_joint, value: 0.2}
+  - {pattern: left_wrist_yaw_joint, value: 1.57}
+  - {pattern: right_wrist_yaw_joint, value: -1.57}
+
+# scene.robot.actuators (ImplicitActuator) from params/env.yaml.
+stiffness_rules:
+  - {pattern: ".*_hip_pitch_joint", value: 100.0}
+  - {pattern: ".*_hip_(roll|yaw)_joint", value: 100.0}
+  - {pattern: ".*_knee_joint", value: 150.0}
+  - {pattern: "waist_(yaw|pitch)_joint", value: 100.0}
+  - {pattern: ".*_ankle_pitch_joint", value: 100.0}
+  - {pattern: ".*_ankle_roll_joint", value: 80.0}
+  - {pattern: ".*_(shoulder_.*|elbow)_joint", value: 40.0}
+  - {pattern: ".*_wrist_yaw_joint|head_joint", value: 30.0}
+
+damping_rules:
+  - {pattern: ".*_hip_.*_joint", value: 2.0}
+  - {pattern: ".*_knee_joint", value: 3.0}
+  - {pattern: "waist_(yaw|pitch)_joint", value: 5.0}
+  - {pattern: ".*_ankle_pitch_joint", value: 1.0}
+  - {pattern: ".*_ankle_roll_joint", value: 1.5}
+  - {pattern: ".*", value: 5.0}
+
+# effort_limit_sim from params/env.yaml. The MJCF actuator ctrlrange is applied on
+# top of this, so ankle pitch/roll stay limited to 65/60 Nm by the model.
+effort_limit_rules:
+  - {pattern: ".*_hip_pitch_joint", value: 140.0}
+  - {pattern: ".*_(hip_roll|hip_yaw|knee)_joint", value: 120.0}
+  - {pattern: "waist_pitch_joint", value: 90.0}
+  - {pattern: "waist_yaw_joint", value: 65.0}
+  - {pattern: ".*_ankle_pitch_joint", value: 120.0}
+  - {pattern: ".*_ankle_roll_joint", value: 75.0}
+  - {pattern: ".*", value: 36.0}

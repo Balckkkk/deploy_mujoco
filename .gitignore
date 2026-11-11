@@ -1,5 +1,9 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.DS_Store
+/MUJOCO_LOG.TXT
+/sim2sim_output/rw_skater/
 
 # VSCode
 .vscode/

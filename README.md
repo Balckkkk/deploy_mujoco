@@ -1,14 +1,14 @@
 # deploy_mujoco
 
-基于 MuJoCo 物理引擎的 R2 与 G1 强化学习策略部署及仿真环境。
+基于 MuJoCo 物理引擎的 R2、G1 与 RW skater 强化学习策略部署及仿真环境。
 
 ## 项目简介
 
-本项目用于在 MuJoCo 仿真器中部署和测试训练好的强化学习行走策略。机器人模型为 R2 v1.2 —— 一款 12 自由度的双足机器人，通过 PD 控制器 + 神经网络策略实现实时运动控制。
+本项目在 MuJoCo 中运行 R2 v1.2 双足行走、G1 地形感知与动作跟踪、RW Skater 轮滑速度策略。
 
 支持：
 
-- R2 TorchScript（`.pt`）和 G1 AME ONNX（`.onnx`）策略部署
+- R2 TorchScript、G1 SuperMimic PyTorch、G1 AME 和 RW Skater ONNX 策略部署
 - 手柄（Joystick）实时控制机器人速度指令
 - 关节状态日志记录（CSV 格式，兼容 PlotJuggler）
 - 两种观测历史打包模式（`time` / `term`）
@@ -20,10 +20,16 @@
 deploy_mujoco/
 ├── r2_deploy.py              # 主部署脚本（v1 配置 / 支持关节日志）
 ├── r2_term.py                # 部署脚本（v2 配置 / term 观测打包模式）
+├── sim2sim/
+│   ├── supermimic_sim2sim.py # G1 Scan80000 参考动作跟踪
+│   └── rw_skater_sim2sim.py  # RW Skater 速度跟踪
+├── asset/sp_g1/              # SuperMimic 训练用 MJCF、网格和冻结配置
 ├── config/
+│   ├── rw_skater.yaml        # 轮滑策略选择与运行配置
 │   ├── r2_v1.yaml            # 机器人配置 v1
 │   └── r2_v2.yaml            # 机器人配置 v2
 ├── assets/
+│   ├── skater_v2/            # RW Skater 模型和网格
 │   └── r2_v1_2/
 │       ├── mjcf/
 │       │   └── r2_v1_2.xml   # MuJoCo 模型描述文件
@@ -32,6 +38,8 @@ deploy_mujoco/
 │       │   └── param.csv     # 模型参数
 │       └── meshes/           # 机器人各部件的 STL 网格文件
 ├── policy/                   # 训练好的策略文件
+│   ├── scan80000/            # SuperMimic 权重和两个示例动作
+│   ├── skater_*/             # push_gait 和 swizzle 权重及训练参数
 │   ├── policy.onnx / policy.pt  # 当前使用的策略
 │   └── r2_flat_*/            # 各版本训练策略及参数备份
 ├── deploy_mujoco_logs/
@@ -39,15 +47,41 @@ deploy_mujoco/
 └── README.md
 ```
 
+## SuperMimic Scan80000
+
+在仓库根目录激活 `rw_sim2sim`。默认示例是 9.08 秒的低台阶动作，运行时会同时加载参考动作和对应的地形。
+
+使用 `sim2sim/supermimic_sim2sim.py` 复现训练配置。根目录的 `scan80000_deploy.py` 保留了早期实验使用的机器人模型和统一动作缩放，供回溯对照。
+
+```bash
+conda activate rw_sim2sim
+mjpython sim2sim/supermimic_sim2sim.py                 # macOS 窗口默认显示策略高程图
+mjpython sim2sim/supermimic_sim2sim.py --show_ref      # 同时叠加参考机器人
+mjpython sim2sim/supermimic_sim2sim.py --show_ref --no-heightmap  # 只看动作对照
+python sim2sim/supermimic_sim2sim.py --check           # 无窗口完整回放
+python sim2sim/supermimic_sim2sim.py --check --seconds 6 --motion policy/scan80000/motions/walk2_subject3.npz
+```
+
+窗口默认显示高程图，可用 `--no-heightmap` 关闭。地面和台阶上的彩点对应当前策略观测里的 187 个采样点。右下角俯视图显示同一帧，前方（+X）朝上，左侧（+Y）朝左，白框是根部投影。颜色表示根部到地形的垂直距离，单位是米。偏黄表示较近，偏蓝表示较远；固定色标为 0.4–1.2 m，面板底部显示本帧实际范围。达到策略 5 m 截断值的格子显示为灰色，三维场景省略对应的点。
+
+`--show_ref` 在同一地形坐标系内叠加半透明粉色 G1。它按当前参考帧的根部位置、朝向和全部关节角做正向运动学，便于观察落脚、姿态和位置漂移。
+
+机器人 MJCF 和 35 个网格取自 InstinctMJ 的 `03563ee`。目录 `asset/sp_g1/params/` 保存了冻结包 `stage2_usable_scan_80000_20261106` 的原始训练配置。入口从这些文件读取站姿、逐关节动作缩放、PD、关节惯量和仿真步长。权重位于 `policy/scan80000/model_80000.pt`，SHA256 为 `999b528d19f598eb6f2c12449649c47cdc26993790f70d49e06ec0919ce990c6`。
+
+`--motion` 接受 planner 数据集导出的 50 Hz NPZ，使用 `base_pos_w`、`base_quat_w`（wxyz）、`joint_pos`、`joint_names` 和 `framerate`。`boxes` 各行保存地块坐标系下的中心、wxyz 四元数及完整长宽高，包含地板和障碍；缺省时使用水平地面。单地块回放采用训练标称参数，从第 0 帧开始，不施加训练时的随机扰动或观测噪声。
+
+无窗口模式输出根部三维位置误差（米）和逐关节平均绝对误差（弧度）。超过根部高度或重力投影阈值时会记录首次越限时刻并返回非零退出码。较长动作可用 `--seconds` 截取，播放至片尾时自动结束。
+
 ## 环境配置
 
 ### 依赖
 
 - Python 3.8+
-- **PyTorch**（R2 TorchScript 推理）
-- **ONNX Runtime**（G1 AME ONNX 推理）
+- **PyTorch**（R2 TorchScript 和 SuperMimic 推理）
+- **ONNX Runtime**（G1 AME 和 RW Skater 推理）
 - **MuJoCo**（`mujoco` Python 绑定，必须）
 - NumPy、PyYAML（必须）
+- Pillow（SuperMimic 高程图面板）
 - Pygame（手柄控制，可选）
 
 > **说明**：R2 使用 `torch.jit.load`；G1 AME 使用训练仓库 exporter 生成的 ONNX，并通过
@@ -76,7 +110,7 @@ pip install -r requirements.txt
 ### 方式二：直接安装
 
 ```bash
-pip install mujoco torch onnxruntime numpy pyyaml pygame
+pip install -r requirements.txt
 ```
 
 ### 验证安装
@@ -173,6 +207,35 @@ python ame_deploy.py --terrain rails
 每块地形为8×8m，水平分辨率0.05m、垂直量化0.005m。`--terrain-difficulty` 范围为
 0到1；`--terrain-seed` 用于复现随机桩高和地面高度。训练中基于 mesh 的正/反金字塔楼梯和
 rails 在 MuJoCo 中使用同尺寸 box 几何，避免 hfield 在垂直边缘产生斜坡观测。
+
+### 6. RW skater_v2 速度策略
+
+`sim2sim/rw_skater_sim2sim.py` 运行 rw_lab `Rw-Lab-Skater_*` 任务训练的 RW 轮滑策略。模型
+`assets/skater_v2` 来自 `rw_mode/skater_v2`（commit 2dba443），策略来自 `rw_policy/skater`，
+配置为 `config/rw_skater.yaml`。目前收录的 `push_gait`（2026-04-21）和 `swizzle`（2026-04-17）
+都是在 skater_v2 上训练的；rw_policy 中 `rw_wheel/*` 的策略基于旧 rw_wheel 模型（踝关节结构和
+右踝 pitch 轴向不同），在 skater_v2 上基本站不住，不要直接用本脚本跑。
+
+观测每帧 84 维（`ang_vel×0.2, gravity, cmd, joint_pos_rel, joint_vel×0.05, last_action`），5 帧
+历史按观测项分组展开为 420 维；动作 25 维，`target = default + 0.25 × action`，控制频率 50 Hz。
+默认关节角、PD 增益和力矩上限都取自策略的 `params/env.yaml`；关节按名字映射到 MJCF，4×2 个轮子
+关节为被动关节。
+
+```bash
+# 无界面核对模型、观测维度和 ONNX
+python sim2sim/rw_skater_sim2sim.py --check
+
+# 打开 viewer（macOS 需用 mjpython），↑/↓ 调 vx，←/→ 调 yaw-rate，Enter 复位
+mjpython sim2sim/rw_skater_sim2sim.py --cmd 0.3,0,0
+mjpython sim2sim/rw_skater_sim2sim.py --policy-name swizzle --joystick
+
+# 无界面按段跑指令并打印稳态跟踪（vx,vy,wz,秒；负数要写成 --cmd=-0.4,0,0,6）
+python sim2sim/rw_skater_sim2sim.py --headless --cmd 0,0,0,4 --cmd 0.4,0,0,8 --cmd 0.25,0,0.4,6
+```
+
+速度指令会被裁剪到各策略的训练范围（`push_gait`: vx −0.1~0.5，`swizzle`: vx −0.6~0.6，
+yaw-rate 均为 ±0.5）。轨迹 CSV 默认写入 `sim2sim_output/rw_skater/`，可用 `--no-log` 关闭。
+新增策略时在配置的 `policies` 下加一项即可。
 
 ## 配置说明
 
