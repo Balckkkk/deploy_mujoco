@@ -4,6 +4,7 @@ __pycache__/
 .DS_Store
 /MUJOCO_LOG.TXT
 /sim2sim_output/rw_skater/
+/sim2sim_output/supermimic/
 
 # VSCode
 .vscode/

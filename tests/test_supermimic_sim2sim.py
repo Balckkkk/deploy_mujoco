@@ -1,11 +1,14 @@
 from contextlib import nullcontext
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 import mujoco
 import numpy as np
 
 from scan80000_policy import GOAL_DIM, SCAN_DIM, JOINT_NAMES, build_goal
-from sim2sim.scan80000_terrain import TrainingHeightMap, add_terrain
+from sim2sim.evaluate_supermimic_terrain import crossing_goal
+from sim2sim.scan80000_terrain import TrainingHeightMap, add_terrain, vary_boxes
 from sim2sim.supermimic_sim2sim import POLICY, ScanReplay
 
 
@@ -143,6 +146,34 @@ class Scan80000ReplayTest(unittest.TestCase):
         scan = scanner.scan(np.array([.025, 0, 1.0]), np.eye(3)).reshape(11, 17)
         # Lattice samples x=0 and x=.05 see ground and box respectively.
         np.testing.assert_allclose(scan[5, 7:10], [1, .8, .6], atol=1e-6)
+
+    def test_terrain_variants_preserve_floor_and_relative_levels(self):
+        # Floor top is 1 m; two obstacles are initially .2 and .4 m above it.
+        boxes = np.array([[0, 0, .9, 1, 0, 0, 0, 10, 10, .2],
+                          [2, 0, 1.1, 1, 0, 0, 0, 1, .4, .2],
+                          [3, 1, 1.2, 1, 0, 0, 0, 1, .4, .4]])
+        src = boxes.copy()
+        result = vary_boxes(boxes, .8, -.25)
+        np.testing.assert_array_equal(boxes, src)
+        np.testing.assert_array_equal(result[0], src[0])
+        np.testing.assert_allclose(result[1:, 2] - result[1:, 9] / 2, [1., 1.])
+        np.testing.assert_allclose(result[1:, 2] + result[1:, 9] / 2, [1.4, 1.8])
+        np.testing.assert_allclose(result[1:, 1], [-.25, .75])
+        np.testing.assert_array_equal(vary_boxes(boxes, 0), boxes[:1])
+        np.testing.assert_array_equal(vary_boxes(boxes), boxes)
+        for height, offset in [(-.1, 0), (np.nan, 0), (.2, np.inf)]:
+            with self.assertRaises(ValueError):
+                vary_boxes(boxes, height, offset)
+
+    def test_heldout_goal_uses_rotated_footprint_and_start_heading(self):
+        # Facing -Y, approach a 90-degree box along +X. Its projected X half-width is .4 m.
+        q = 2**-.5
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "scene.npz"
+            np.savez(path, base_pos_w=[[-2., 1., .8]], base_quat_w=[[q, 0, 0, -q]],
+                     boxes=[[0., 0., -.1, 1., 0., 0., 0., 10., 10., .2],
+                            [1., 1., .3, q, 0., 0., q, 2., .8, .6]])
+            np.testing.assert_allclose(crossing_goal(path), [0., 4.6, 90.], atol=1e-8)
 
 
 if __name__ == "__main__":

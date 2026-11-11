@@ -26,9 +26,12 @@ class ReferenceGhost:
         self.perturb = mujoco.MjvPerturb()
 
     def append(self, scene, motion, frame):
-        self.data.qpos[:3] = motion.pos[frame]
-        self.data.qpos[3:7] = motion.quat[frame]
-        self.data.qpos[self.joint_qpos_indices] = motion.joints[frame]
+        self.append_pose(scene, motion.pos[frame], motion.quat[frame], motion.joints[frame])
+
+    def append_pose(self, scene, position, quaternion, joints):
+        self.data.qpos[:3] = position
+        self.data.qpos[3:7] = quaternion
+        self.data.qpos[self.joint_qpos_indices] = joints
         mujoco.mj_kinematics(self.model, self.data)
 
         first = scene.ngeom
@@ -39,6 +42,20 @@ class ReferenceGhost:
             geom.rgba[:] = (1.0, 0.32, 0.62, 0.42)
             geom.emission = 0.45
             geom.castshadow = 0
+
+
+def draw_planner_goal(scene, position, yaw):
+    """Add a floor arrow at the final target, pointing along the requested heading."""
+    if scene.ngeom >= scene.maxgeom:
+        return
+    start = np.asarray(position, dtype=np.float64) + [0, 0, 0.035]
+    end = start + 0.32 * np.array([np.cos(yaw), np.sin(yaw), 0])
+    arrow = scene.geoms[scene.ngeom]
+    kind = mujoco.mjtGeom.mjGEOM_ARROW
+    mujoco.mjv_initGeom(arrow, kind, np.zeros(3), start, np.eye(3).ravel(), (0.15, 1, 0.4, 1))
+    mujoco.mjv_connector(arrow, kind, 0.025, start, end)
+    arrow.emission = 0.5
+    scene.ngeom += 1
 
 
 def scan_colors(values):
@@ -70,27 +87,32 @@ def heightmap_panel(values, colors):
     return panel
 
 
-def draw_heightmap(viewer, scanner, root_pose, observation):
-    values = observation[GOAL_DIM:GOAL_DIM + SCAN_DIM]
+def append_scan_markers(scene, scanner, root_pose, values, radius=0.017):
     colors = scan_colors(values)
     valid = values < scanner.max_distance
     colors[~valid] = (102, 103, 110)
     xy = scanner.world_xy(root_pose[:3], quat_to_mat(root_pose[3:7]))
     points = np.column_stack((xy, root_pose[2] - values))
     rgba = np.column_stack((colors / 255.0, np.ones(len(values)))).astype(np.float32)
-    size = np.full(3, 0.017)
+    size = np.full(3, radius)
     orientation = np.eye(3).ravel()
+    for point, color in zip(points[valid], rgba[valid]):
+        if scene.ngeom >= scene.maxgeom:
+            break
+        geom = scene.geoms[scene.ngeom]
+        mujoco.mjv_initGeom(geom, mujoco.mjtGeom.mjGEOM_SPHERE, size, point, orientation, color)
+        geom.emission = 0.8
+        geom.specular = 0.0
+        scene.ngeom += 1
+    return colors
+
+
+def draw_heightmap(viewer, scanner, root_pose, observation):
+    values = observation[GOAL_DIM:GOAL_DIM + SCAN_DIM]
     with viewer.lock():
         scene = viewer.user_scn
         scene.ngeom = 0
-        for point, color in zip(points[valid], rgba[valid]):
-            if scene.ngeom == scene.maxgeom:
-                break
-            geom = scene.geoms[scene.ngeom]
-            mujoco.mjv_initGeom(geom, mujoco.mjtGeom.mjGEOM_SPHERE, size, point, orientation, color)
-            geom.emission = 0.8
-            geom.specular = 0.0
-            scene.ngeom += 1
+        colors = append_scan_markers(scene, scanner, root_pose, values)
 
     viewport = viewer.viewport
     if viewport is None or viewport.width < 32 or viewport.height < 32:

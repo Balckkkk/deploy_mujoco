@@ -21,7 +21,10 @@ deploy_mujoco/
 ├── r2_deploy.py              # 主部署脚本（v1 配置 / 支持关节日志）
 ├── r2_term.py                # 部署脚本（v2 配置 / term 观测打包模式）
 ├── sim2sim/
-│   ├── supermimic_sim2sim.py # G1 Scan80000 参考动作跟踪
+│   ├── supermimic_sim2sim.py # S0 动作回放与 S1 → S0 在线仿真入口
+│   ├── supermimic_planner.py # 用实测状态与地形生成 S1 参考动作
+│   ├── evaluate_supermimic_terrain.py # 批量地形泛化评测
+│   ├── supermimic_terrain_gif.py      # 导出轨迹与足底接触动画
 │   └── rw_skater_sim2sim.py  # RW Skater 速度跟踪
 ├── asset/sp_g1/              # SuperMimic 训练用 MJCF、网格和冻结配置
 ├── config/
@@ -38,7 +41,8 @@ deploy_mujoco/
 │       │   └── param.csv     # 模型参数
 │       └── meshes/           # 机器人各部件的 STL 网格文件
 ├── policy/                   # 训练好的策略文件
-│   ├── scan80000/            # SuperMimic 权重和两个示例动作
+│   ├── scan80000/            # S0 跟踪权重、平地、低台阶与高台示例
+│   ├── s1_flow_w256/         # S1 动作规划权重
 │   ├── skater_*/             # push_gait 和 swizzle 权重及训练参数
 │   ├── policy.onnx / policy.pt  # 当前使用的策略
 │   └── r2_flat_*/            # 各版本训练策略及参数备份
@@ -49,7 +53,7 @@ deploy_mujoco/
 
 ## SuperMimic Scan80000
 
-在仓库根目录激活 `rw_sim2sim`。默认示例是 9.08 秒的低台阶动作，运行时会同时加载参考动作和对应的地形。
+在仓库根目录激活 `rw_sim2sim`。S0 和 S1 权重通过 Git LFS 分发，首次使用时安装 Git LFS 并运行 `git lfs pull` 下载权重。默认示例是 9.08 秒的低台阶动作，运行时会同时加载参考动作和对应的地形。
 
 使用 `sim2sim/supermimic_sim2sim.py` 复现训练配置。根目录的 `scan80000_deploy.py` 保留了早期实验使用的机器人模型和统一动作缩放，供回溯对照。
 
@@ -71,6 +75,84 @@ python sim2sim/supermimic_sim2sim.py --check --seconds 6 --motion policy/scan800
 `--motion` 接受 planner 数据集导出的 50 Hz NPZ，使用 `base_pos_w`、`base_quat_w`（wxyz）、`joint_pos`、`joint_names` 和 `framerate`。`boxes` 各行保存地块坐标系下的中心、wxyz 四元数及完整长宽高，包含地板和障碍；缺省时使用水平地面。单地块回放采用训练标称参数，从第 0 帧开始，不施加训练时的随机扰动或观测噪声。
 
 无窗口模式输出根部三维位置误差（米）和逐关节平均绝对误差（弧度）。超过根部高度或重力投影阈值时会记录首次越限时刻并返回非零退出码。较长动作可用 `--seconds` 截取，播放至片尾时自动结束。
+
+### 在线 S1 planner → S0
+
+`--planner` 加载 `policy/s1_flow_w256/ckpt_045000.pt` 的 EMA 权重与训练归一化参数。S1 直接使用 SuperMimic 源码里的推理实现，需要将含 `perspmimic/` 的训练仓库根目录加入 `PYTHONPATH`。此版本使用训练仓库的 `2e3da54` 提交验证。权重来自第二轮 `flow_w256` 第 45000 步，SHA256 为 `05eeb6ee7cff8c452459574e6dd4cb6772ff0ea7b062ccc787813ed7a289ac99`。
+
+```bash
+conda activate rw_sim2sim
+export PYTHONPATH="/path/to/supermimic${PYTHONPATH:+:$PYTHONPATH}"
+# 平地向前 2 m。粉色 G1 显示当前 S1 参考，绿色箭头标出目标位置和朝向。
+mjpython sim2sim/supermimic_sim2sim.py --planner --goal 2 0 0 --show_ref
+# 在低台阶场景中，把目标设在起点前方 6 m
+python sim2sim/supermimic_sim2sim.py --planner --motion policy/scan80000/motions/low_step.npz \
+  --goal 6 0 0 --seconds 16 --seed 0 --check
+```
+
+`--goal` 的三个值依次是相对初始朝向的前向距离（米）、左向距离（米）和最终偏航角（度）。场景 NPZ 提供起始姿态和地形，机器人从零速度启动。S1 每 0.2 秒读取最近 4 帧实际机器人状态、31×61 的局部地形图和目标，按 50 Hz 生成未来 64 帧。重规划时保留上一计划中已承诺的 20 帧。S0 跟踪这些参考，窗口显示的是 S0 自己使用的 187 点高程图。
+
+默认评测 12 秒、随机种子 0。每个 S0 控制步都会将实际姿态与当前参考比较。根部高度绝对误差超过 0.25 m 或机身坐标系下单位重力向量的差值范数超过 0.8 时，在线仿真会提前结束。S1 重规划时，如果局部高程图、历史位置或中间目标的地形查询超出地块，也会提前结束。`--check` 在跑满时长、全程未越限且终点水平误差小于 0.30 m、朝向误差小于 20° 时返回成功。中途到达目标会继续仿真。
+
+要观察机器人跌倒后或高程图越界后的行为，给在线模式加 `--no-early-stop`。下面的命令在 macOS 打开 95 cm 高台场景。
+
+```bash
+mjpython sim2sim/supermimic_sim2sim.py --terrain-demo climb --box-height .95 --seed 0 --no-early-stop
+```
+
+实时窗口会一直运行到手动关闭。可加 `--seconds 30` 在 30 秒仿真时间结束。无窗口检查和 GIF 导出仍有默认时长，地形演示为 16 秒，普通 planner 为 12 秒。越过跟踪阈值后，S1 和 S0 继续闭环运行。地形覆盖不足期间，S0 跟完最近一次有效计划后保持最后的参考姿态；首次规划就越界时使用初始姿态。S1 每 0.2 秒重新查询，覆盖恢复后继续生成动作。非有限数值和 MuJoCo 仿真异常仍会报错。
+
+`--metrics-json` 的 `stop` 记录实际结束原因，`first_violation_s` 分别记录跟踪越限和地形越界的首次时刻（秒）。连续模式中只要发生过越限，`--check` 仍返回失败。批量泛化脚本 `sim2sim/evaluate_supermimic_terrain.py` 同样接受 `--no-early-stop`，汇总中的 `trials_with_violation` 统计发生过越限的试次。
+
+在 `rw_sim2sim` 环境用种子 0、1、2 运行以上两个场景，六次均未达标。表中为执行结束时实际机器人的水平目标误差。
+
+| 场景 | 种子 0 | 种子 1 | 种子 2 |
+|---|---:|---:|---:|
+| 平地向前 2 m，12 s | 3.74 m | 5.32 m | 2.31 m |
+| 低台阶向前 6 m，16 s | 9.43 m | 4.44 m | 5.43 m（13 s 时高程图越界） |
+
+平地种子 0 在 8.22 s 时最接近目标，距离 0.38 m，之后继续偏离。相同起点、目标和种子下，直接执行 S1 生成姿态的运动学对照在 12 s 时误差为 0.29 m。
+
+### 台阶和高台可视化
+
+激活上面的 `rw_sim2sim` 环境并设置 `PYTHONPATH` 后，在仓库根目录运行：
+
+```bash
+mjpython sim2sim/supermimic_sim2sim.py --terrain-demo step
+mjpython sim2sim/supermimic_sim2sim.py --terrain-demo climb
+python sim2sim/supermimic_sim2sim.py --terrain-demo climb --seed 0 \
+  --gif sim2sim_output/supermimic/climb_seed0.gif
+```
+
+`step` 加载 35.2 厘米台阶，`climb` 加载 76 厘米高台。后者的场景文件 `policy/scan80000/motions/climb_76.npz` 来自 `planner_v1_20261109/motions/train/train__php__motions-low-climb-76__forward_walk0.6s_step1.2s.npz`。两者默认从静止开始，目标在前方 6 米，运行 16 秒。可用 `--seed`、`--seconds` 和 `--goal` 覆盖。
+
+窗口默认叠加粉色 S1 参考机器人、S0 高程采样点和绿色目标箭头。`--gif` 使用离屏渲染，并在画面右侧显示俯视轨迹和足底接触时间。脚踩上台面的判据为法向力大于 1 N、接触法线竖直分量的绝对值至少 0.8、接触点距台面高度小于 2.5 厘米。双脚先后上台，再各自在障碍另一侧接触地面时，记录落地时间。渲染代码位于 `sim2sim/supermimic_terrain_gif.py`。
+
+### 改变箱高和验证泛化
+
+`--box-height` 以米指定障碍最高台面相对地面的高度。组合箱体以地板上表面为基准在竖直方向等比缩放，0 表示只保留地板。`--box-offset-y` 以米沿场景的世界 Y 轴平移整组障碍。起点和目标仍在原位置。MuJoCo 碰撞体、S1 地形输入、S0 高程图和足底判定使用同一组修改后的箱体；源 NPZ 只读。
+
+```bash
+# 观察高台改成 70 cm、整体横移 +25 cm 后的闭环行为
+mjpython sim2sim/supermimic_sim2sim.py --terrain-demo climb --box-height .70 --box-offset-y .25
+# 观察 75 cm 高台沿世界 Y 轴平移 0.5 m 后的动作，直到关闭窗口
+mjpython sim2sim/supermimic_sim2sim.py --terrain-demo climb --box-height .75 --box-offset-y .5 --seed 0 --no-early-stop
+# 单次无窗口运行，记录真实接触、最近及最终目标距离、朝向和停止原因
+python sim2sim/supermimic_sim2sim.py --terrain-demo step --box-height .55 --seed 0 \
+  --check --metrics-json sim2sim_output/supermimic/step55.json
+# 配对实验：原始地形、只改高度、只改横向位置。每种设置使用相同的一组种子。
+python sim2sim/evaluate_supermimic_terrain.py --workers 3 --output sim2sim_output/supermimic/sweep.json
+# 自定义高度与种子；--offsets 0 表示只测原始位置
+python sim2sim/evaluate_supermimic_terrain.py --scenes climb --heights .55 .70 .82 .95 --offsets 0 \
+  --seeds 0 1 2 --workers 3 --output sim2sim_output/supermimic/climb_heights.json
+# 原始留出布局：读取 planner 数据集 index.json 中 test 划分的 step、climb 样本
+python sim2sim/evaluate_supermimic_terrain.py --heldout-dataset /path/to/planner_v1_20261109 \
+  --seeds 0 1 2 --workers 3 --output sim2sim_output/supermimic/heldout.json
+```
+
+配对实验使用前方 6 m 的固定目标。留出测试只用起始姿态和箱体几何选目标，方向从起点指向箱体中心的均值，终点落在最远箱边外 1.2 m，最终朝向同一方向。两个协议都在 16 秒时按相同阈值结算。报告中的 `crossed` 记录两脚是否踩上台面再落到另一侧，`goal_reached` 记录终点距离和朝向是否达标，`task_success` 要求两者同时满足。平地对照的 `crossed` 为 `null`。提前停止的试次也计入分母。`--check` 的退出码沿用原来的终点判据。
+
+2026-11-11 实测 42 条配对试次和 60 条留出试次。台阶布局在 20、30、35.2、40 cm 各翻越 3/3 次，55 cm 为 0/3。高台布局在 55、70、76.4、82、95 cm 依次为 0/3、3/3、3/3、1/3、0/3。原高下向世界 Y 轴正负方向各平移 25 cm，两种布局共翻越 12/12 次。20 个留出布局每个运行 3 个种子：台阶翻越 31/36、完整任务 0/36，高台翻越 12/24、完整任务 5/24。
 
 ## 环境配置
 
