@@ -29,10 +29,33 @@ def local_frames(pos, rot, joints, origin, yaw_rotation):
     return np.concatenate(((pos - origin) @ yaw_rotation, F.rot6d(yaw_rotation.T @ rot), joints), axis=-1)
 
 
+def reanchor_reference(pos, quat, i, p, yaw, mode):
+    """Align the old reference at this tick with the measured base in the horizontal plane."""
+    if mode == "world":
+        return pos, quat
+    offset_xy = pos[:, :2] - pos[i, :2]
+    if mode == "xy-yaw":
+        angle = yaw - F.yaw(quat[i])
+        offset_xy = offset_xy @ F.yaw_mat(angle)[:2, :2].T
+        # World yaw left-multiplies the original wxyz base quaternion.
+        c, s = np.cos(angle / 2), np.sin(angle / 2)
+        w, x, y, z = quat.T
+        quat = np.stack((c*w - s*z, c*x - s*y, c*y + s*x, c*z + s*w), axis=1)
+    pos = pos.copy()
+    pos[:, :2] = p[:2] + offset_xy
+    return pos, quat
+
+
 class OnlinePlanner:
-    def __init__(self, rt, checkpoint, goal, seed):
+    def __init__(self, rt, checkpoint, goal, seed, *, reanchor=None):
+        self.reanchor = "xy" if reanchor is None else reanchor
+        if self.reanchor not in ("xy", "xy-yaw", "world"):
+            raise ValueError(f"Unknown planner reanchor mode: {reanchor}")
         self.model, self.norm, ck = load(checkpoint, "cpu")
         self.checkpoint_step = ck["step"]
+        radius = ck["meta"]["config"].get("goal_radius_m", 0.)
+        if getattr(self.norm, "goal_radius", 0.) != radius:
+            raise ValueError(f"S1 requires goal radius {radius} m; load the matching SuperMimic planner on PYTHONPATH")
         names = list(ck["meta"]["joint_names"])
         if sorted(names) != sorted(JOINT_NAMES):
             raise ValueError("S1 and S0 must control the same named joints")
@@ -129,33 +152,29 @@ class OnlinePlanner:
         reference, i = rt.ref, rt.reference_frame
         # Frames repeated during a terrain outage are not a committed S1 prefix.
         k = min(self.prefix_len, max(0, self.last_planned_frame - rt.frame))
+        # Keep t-1 (when available), t, and the k committed frames in one reference window.
+        previous = min(i, 1)
+        kept = slice(i - previous, i + 1 + k)
+        ref_pos, ref_quat = reanchor_reference(reference.pos[kept], reference.quat[kept], previous,
+                                               p, yaw, self.reanchor if rt.frame else "world")
+        ref_joints = reference.joints[kept]
         prefix = torch.zeros(1, F.FUTURE, 38)
         mask = torch.zeros(1, F.FUTURE, dtype=torch.bool)
-        committed = slice(i + 1, i + 1 + k)
         if k:
-            local = local_frames(reference.pos[committed], F.quat_mat(reference.quat[committed]),
-                                 reference.joints[committed][:, self.to_planner], p, Ry)
+            local = local_frames(ref_pos[-k:], F.quat_mat(ref_quat[-k:]), ref_joints[-k:, self.to_planner], p, Ry)
             prefix[0, :k] = self.norm.norm("future", torch.as_tensor(local, dtype=torch.float32))
             mask[0, :k] = True
         samples = self.model.sample(cond, prefix, mask, generator=self.rng)
         future = self.norm.denorm("future", samples)[0].numpy().astype(np.float64)
-        pos, rot = F.to_world(future, np.r_[p, yaw])
+        pos, rot = F.to_world(future[k:], np.r_[p, yaw])
         if not all(np.isfinite(x).all() for x in (future, pos, rot)):
             raise FloatingPointError(f"Invalid S1 output at simulation frame {rt.frame}")
-        quat = np.empty((len(future), 4))
+        quat = np.empty((len(rot), 4))
         for q, matrix in zip(quat, rot):
             mujoco.mju_mat2Quat(q, matrix.ravel())
-        joints = future[:, 9:][:, self.to_tracker]
-        if k:
-            # Keep the committed world frames bit-identical across the change of yaw frame.
-            pos[:k], quat[:k], joints[:k] = reference.pos[committed], reference.quat[committed], reference.joints[committed]
-
-        # Future[0] is t+1. Retain t and, after startup, t-1 for S0's 50 Hz central difference.
-        past = slice(max(i - 1, 0), i + 1)
-        pos = np.concatenate((reference.pos[past], pos))
-        quat = np.concatenate((reference.quat[past], quat))
-        joints = np.concatenate((reference.joints[past], joints))
-        rt.ref = ReferenceWindow(rt.frame - min(i, 1), pos, quat, joints, frontbackward_velocity(joints, rt.dt))
+        joints = np.concatenate((ref_joints, future[k:, 9:][:, self.to_tracker]))
+        rt.ref = ReferenceWindow(rt.frame - previous, np.concatenate((ref_pos, pos)), np.concatenate((ref_quat, quat)),
+                                 joints, frontbackward_velocity(joints, rt.dt))
         self.last_planned_frame = rt.frame + F.FUTURE
         self.replans += 1
         return True

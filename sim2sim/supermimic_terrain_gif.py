@@ -34,7 +34,8 @@ class TerrainReplayGIF:
         self.seed = seed
         self.show_heightmap = show_heightmap
         self.frames = []
-        self.contacts = contacts if contacts is not None else TerrainContacts(rt, planner.target_xy)
+        self.contacts = contacts if contacts is not None else TerrainContacts(
+            rt, planner.target_xy, goal_height=planner.target_ground[2], goal_error=planner.goal_error)
         self.tops, self.corners = self.contacts.tops, self.contacts.corners
         self.height = peak_box_height(rt.motion.boxes)
 
@@ -43,6 +44,8 @@ class TerrainReplayGIF:
 
     @property
     def events(self):
+        if self.contacts.goal_on_top:
+            return [*self.contacts.top_times, self.contacts.first_hold_s]
         return self.contacts.events
 
     def capture(self):
@@ -146,6 +149,8 @@ class ReplayOverlay:
         draw.text((570, 232), self.label("实际足底接触", "Foot contacts"), font=self.body, fill=white)
         labels = [self.label("左脚踩上台面", "Left on top"), self.label("右脚踩上台面", "Right on top"),
                   self.label("两脚均落到另一侧", "Both landed beyond")]
+        if r.contacts.goal_on_top:
+            labels[2] = self.label("目标处双脚站稳 1 秒", "Held goal for 1 s")
         for j, (label, when) in enumerate(zip(labels, r.events)):
             hit = when is not None and f.time + 1e-8 >= when
             y = 261 + 25 * j

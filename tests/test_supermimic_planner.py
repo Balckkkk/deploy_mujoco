@@ -35,8 +35,32 @@ class PlannerIntegrationTest(unittest.TestCase):
             raw = planner.norm.denorm(key, cond[key])[0].numpy()
             np.testing.assert_allclose(raw, expected[key], atol=2e-6)
 
+    def test_r3_platform_scene_uses_bounded_goal_and_real_start_pose(self):
+        from perspmimic.planning import features as F
+        from sim2sim.supermimic_planner import OnlinePlanner
+        from sim2sim.supermimic_sim2sim import TOP_SCENES
+
+        checkpoint = TOP_SCENES.parent / "ckpt_070000.pt"
+        if not checkpoint.is_file():
+            self.skipTest("R3 integration requires its local S1 weights")
+        for name, height in (("step_top", .35235), ("climb_top", .76382)):
+            path = TOP_SCENES / (name + ".npz")
+            rt = ScanReplay(path, initial_pose_only=True)
+            with np.load(path) as clip:
+                planner = OnlinePlanner(rt, checkpoint, clip["goal"], 0)
+            self.assertEqual(planner.checkpoint_step, 70000)
+            self.assertAlmostEqual(planner.target_ground[2], height, places=4)
+            start = rt.data.qpos[:7].copy()
+            rot = F.yaw_mat(F.yaw(start[3:]))
+            planner.target_xy = start[:2] + rot[:2, 0] * .4
+            planner.history.extend([(start, rt.data.qpos[rt.q][planner.to_planner])] * F.HISTORY)
+            cond, *_ = planner.conditions()
+            raw = planner.norm.denorm("goal", cond["goal"])[0].numpy()
+            np.testing.assert_allclose(raw[:2], [.8, 0.], atol=2e-6)
+
     def test_replan_preserves_world_prefix_and_uses_physics_history(self):
         rt, planner = self.rt, self.planner
+        planner.reanchor = "world"
         np.testing.assert_array_equal(rt.data.qvel, 0)
         self.assertEqual(len(rt.motion.pos), 1)
         planner.update(rt)
@@ -56,6 +80,41 @@ class PlannerIntegrationTest(unittest.TestCase):
         np.testing.assert_allclose(rt.ref.vel[i], (first.joints[11] - first.joints[9]) / (2 * rt.dt))
         self.assertEqual(rt.observation().shape, (1601,))
         self.assertTrue(np.isfinite(rt.observation()).all())
+
+    def test_reanchor_uses_same_tick_for_model_prefix_and_tracker_reference(self):
+        from perspmimic.planning import features as F
+        from sim2sim.supermimic_planner import REPLAN
+
+        rt, planner = self.rt, self.planner
+        self.assertEqual(planner.reanchor, "xy")
+        for mode in (planner.reanchor, "xy-yaw"):
+            with self.subTest(mode=mode):
+                rt.reset()
+                planner.reanchor = mode
+                for frame in range(REPLAN):
+                    planner.update(rt)
+                    rt.step()
+                old, i = rt.ref, rt.reference_frame
+                k = planner.prefix_len
+                rt.data.qpos[:3] = old.pos[i] + [.24, -.12, .06]
+                yaw = F.yaw(old.quat[i]) + .4
+                rt.data.qpos[3:7] = [np.cos(yaw / 2), 0., 0., np.sin(yaw / 2)]
+                with patch.object(planner.model, "sample", wraps=planner.model.sample) as sample:
+                    self.assertTrue(planner.update(rt))
+                kept = slice(i - 1, i + k + 1)
+                R = F.yaw_mat(.4 if mode == "xy-yaw" else 0.)
+                expected = (old.pos[kept] - old.pos[i]) @ R.T + np.r_[rt.data.qpos[:2], old.pos[i, 2]]
+                expected_rot = R @ F.quat_mat(old.quat[kept])
+                np.testing.assert_allclose(rt.ref.pos[:k+2], expected, atol=1e-12)
+                np.testing.assert_allclose(F.quat_mat(rt.ref.quat[:k+2]), expected_rot, atol=1e-12)
+                np.testing.assert_array_equal(rt.ref.joints[:k+2], old.joints[kept])
+
+                _, prefix, mask = sample.call_args.args
+                self.assertEqual(int(mask.sum()), k)
+                local = planner.norm.denorm("future", prefix)[0, :k].numpy().astype(float)
+                pos, rot = F.to_world(local, np.r_[rt.data.qpos[:3], yaw])
+                np.testing.assert_allclose(pos, expected[2:], atol=2e-6)
+                np.testing.assert_allclose(rot, expected_rot[2:], atol=2e-6)
 
     def test_missing_terrain_holds_exhausted_plan_and_resumes_with_only_real_prefix(self):
         from perspmimic.planning import features as F

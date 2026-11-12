@@ -27,7 +27,9 @@ ASSET = ROOT / "asset/sp_g1"
 POLICY = ROOT / "policy/scan80000"
 DEFAULT_PLANNER_CHECKPOINT = ROOT / "policy/s1_flow_w256/ckpt_045000.pt"
 DEFAULT_MOTION = POLICY / "motions/low_step.npz"
-TERRAIN_DEMOS = {"step": DEFAULT_MOTION, "climb": POLICY / "motions/climb_76.npz"}
+TOP_SCENES = ROOT / "policy/s1_r3_123_w256/scenes"
+TERRAIN_DEMOS = {"step": DEFAULT_MOTION, "climb": POLICY / "motions/climb_76.npz",
+                 "step-top": TOP_SCENES / "step_top.npz", "climb-top": TOP_SCENES / "climb_top.npz"}
 
 
 def joint_values(rules, default=None):
@@ -214,7 +216,7 @@ def build_argument_parser():
     scene = parser.add_mutually_exclusive_group()
     scene.add_argument("--motion", type=Path, help="50 Hz reference NPZ (planner mode uses its start pose and terrain)")
     scene.add_argument("--terrain-demo", choices=TERRAIN_DEMOS,
-                       help="view S1 and S0 on a 35.2 cm step or 76 cm climbing platform (6 m goal, 16 s)")
+                       help="step/climb aim 6 m ahead; step-top/climb-top aim at a measured platform stop (16 s)")
     parser.add_argument("--box-height", type=float, metavar="M", help="peak obstacle height above floor in metres; 0 removes obstacles")
     parser.add_argument("--box-offset-y", type=float, default=0.0, metavar="M", help="move obstacles along world Y in metres")
     parser.add_argument("--metrics-json", type=Path, help="write planner contact, tracking and final target metrics")
@@ -222,6 +224,8 @@ def build_argument_parser():
     parser.add_argument("--checkpoint", type=Path, default=POLICY / "model_80000.pt")
     parser.add_argument("--planner", action="store_true", help="drive S0 with the online SuperMimic S1 planner")
     parser.add_argument("--planner-checkpoint", type=Path, help="S1 checkpoint (default: flow_w256 step 45000)")
+    parser.add_argument("--planner-reanchor", choices=("xy", "xy-yaw", "world"),
+                        help="align the retained reference in XY (default), include yaw, or keep its world pose")
     parser.add_argument("--goal", type=float, nargs=3, metavar=("FORWARD_M", "LEFT_M", "YAW_DEG"),
                         help="planner target in the starting yaw frame (default: 2 0 0)")
     parser.add_argument("--seed", type=int, help="planner sampling seed (default: 0)")
@@ -247,7 +251,8 @@ def main():
         args.planner = True
         args.motion = TERRAIN_DEMOS[args.terrain_demo]
         if args.goal is None:
-            args.goal = (6, 0, 0)
+            with np.load(args.motion, allow_pickle=False) as scene:
+                args.goal = tuple(scene["goal"]) if "goal" in scene else (6, 0, 0)
         args.show_ref = args.show_ref or not args.check
     if args.no_early_stop and not args.planner:
         parser.error("--no-early-stop requires --planner or --terrain-demo")
@@ -257,8 +262,8 @@ def main():
         parser.error("Showing an overlay requires a viewer; remove --check/--headless")
     if args.show_heightmap is None:
         args.show_heightmap = bool(args.gif) or not args.check
-    if not args.planner and any(x is not None for x in (args.planner_checkpoint, args.goal, args.seed)):
-        parser.error("--goal, --seed and --planner-checkpoint require --planner")
+    if not args.planner and any(x is not None for x in (args.planner_checkpoint, args.planner_reanchor, args.goal, args.seed)):
+        parser.error("--goal, --seed, --planner-checkpoint and --planner-reanchor require --planner or --terrain-demo")
     if args.metrics_json and not args.planner:
         parser.error("--metrics-json requires planner mode")
     if not np.isfinite(args.box_offset_y) or (args.box_height is not None and
@@ -276,7 +281,7 @@ def main():
                 parser.error("Add the SuperMimic checkout to PYTHONPATH to use --planner")
             raise
         planner = OnlinePlanner(rt, args.planner_checkpoint or DEFAULT_PLANNER_CHECKPOINT,
-                                args.goal or (2, 0, 0), args.seed or 0)
+                                args.goal or (2, 0, 0), args.seed or 0, reanchor=args.planner_reanchor)
         if args.seconds is None and (not args.no_early_stop or args.check or args.gif):
             args.seconds = 16.0 if args.terrain_demo else 12.0
     steps = None if planner else len(rt.motion.pos) - 1
@@ -293,7 +298,10 @@ def main():
     peak = peak_box_height(rt.motion.boxes)
     if args.terrain_demo or args.box_height is not None or args.box_offset_y:
         print(f"Obstacle height {peak:.3f} m | world Y offset {args.box_offset_y:+.3f} m", flush=True)
-    contacts = TerrainContacts(rt, planner.target_xy) if planner and (args.terrain_demo or args.metrics_json or args.gif) else None
+    contacts = None
+    if planner and (args.terrain_demo or args.metrics_json or args.gif):
+        contacts = TerrainContacts(rt, planner.target_xy, goal_height=planner.target_ground[2],
+                                   goal_error=planner.goal_error)
     reference = None
     recorder = None
     viewer_context = nullcontext()
@@ -374,6 +382,9 @@ def main():
     if contacts:
         times = [f"{t:.2f} s" if t is not None else "not observed" for t in contacts.events]
         print(f"Left on top: {times[0]}, right on top: {times[1]}, both landed beyond: {times[2]}")
+        if contacts.goal_on_top:
+            print(f"Stable bilateral stance at platform goal: longest {contacts.longest_hold_s:.3f} s, "
+                  f"at end {contacts.final_hold_s:.3f} s")
     if rt.frame:
         print(f"{rt.data.time:.2f}s | mean root error {sums[0]/rt.frame:.4f} m | "
               f"mean joint error {sums[1]/rt.frame:.4f} rad | final root z {rt.data.qpos[2]:.3f} m")
@@ -385,13 +396,21 @@ def main():
         if args.metrics_json:
             left, right, landed = contacts.events
             crossed = landed is not None if contacts.tops else None
+            if contacts.goal_on_top:
+                task_ok = reached and contacts.final_hold_s >= 1.0
+            else:
+                task_ok = reached and crossed is not False
             metrics = dict(scene=args.terrain_demo, motion=str(motion), seed=args.seed or 0,
+                           planner_reanchor=planner.reanchor,
                            s1_step=planner.checkpoint_step, s0_step=rt.policy.iteration, box_height_m=peak,
                            box_offset_y_m=args.box_offset_y, goal_xy_m=planner.target_xy.tolist(),
                            final_xy_m=rt.data.qpos[:2].tolist(), duration_s=rt.data.time, stop=stop,
                            no_early_stop=args.no_early_stop, first_violation_s=first_violation_s,
                            left_top_s=left, right_top_s=right, landed_beyond_s=landed, crossed=crossed,
-                           goal_reached=bool(reached), task_success=bool(reached and crossed is not False),
+                           goal_reached=bool(reached), task_success=bool(task_ok),
+                           task="stop_on_top" if contacts.goal_on_top else "cross" if contacts.tops else "flat_goal",
+                           final_top_hold_s=contacts.final_hold_s if contacts.goal_on_top else None,
+                           longest_top_hold_s=contacts.longest_hold_s if contacts.goal_on_top else None,
                            final_xy_error_m=float(distance), final_yaw_error_deg=float(yaw_error),
                            closest_xy_error_m=closest[0], closest_time_s=closest[1],
                            mean_root_error_m=float(sums[0]/rt.frame) if rt.frame else None,

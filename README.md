@@ -42,7 +42,8 @@ deploy_mujoco/
 │       └── meshes/           # 机器人各部件的 STL 网格文件
 ├── policy/                   # 训练好的策略文件
 │   ├── scan80000/            # S0 跟踪权重、平地、低台阶与高台示例
-│   ├── s1_flow_w256/         # S1 动作规划权重
+│   ├── s1_flow_w256/         # 第二轮 S1 动作规划权重
+│   ├── s1_r3_123_w256/       # 第三轮①②③ S1 权重及两个台面停车场景
 │   ├── skater_*/             # push_gait 和 swizzle 权重及训练参数
 │   ├── policy.onnx / policy.pt  # 当前使用的策略
 │   └── r2_flat_*/            # 各版本训练策略及参数备份
@@ -104,7 +105,7 @@ mjpython sim2sim/supermimic_sim2sim.py --terrain-demo climb --box-height .95 --s
 
 `--metrics-json` 的 `stop` 记录实际结束原因，`first_violation_s` 分别记录跟踪越限和地形越界的首次时刻（秒）。连续模式中只要发生过越限，`--check` 仍返回失败。批量泛化脚本 `sim2sim/evaluate_supermimic_terrain.py` 同样接受 `--no-early-stop`，汇总中的 `trials_with_violation` 统计发生过越限的试次。
 
-在 `rw_sim2sim` 环境用种子 0、1、2 运行以上两个场景，六次均未达标。表中为执行结束时实际机器人的水平目标误差。
+在 `rw_sim2sim` 环境用旧版世界坐标前缀（`--planner-reanchor world`）和种子 0、1、2 运行以上两个场景，六次均未达标。表中为执行结束时实际机器人的水平目标误差。
 
 | 场景 | 种子 0 | 种子 1 | 种子 2 |
 |---|---:|---:|---:|
@@ -112,6 +113,35 @@ mjpython sim2sim/supermimic_sim2sim.py --terrain-demo climb --box-height .95 --s
 | 低台阶向前 6 m，16 s | 9.43 m | 4.44 m | 5.43 m（13 s 时高程图越界） |
 
 平地种子 0 在 8.22 s 时最接近目标，距离 0.38 m，之后继续偏离。相同起点、目标和种子下，直接执行 S1 生成姿态的运动学对照在 12 s 时误差为 0.29 m。
+
+### 第三轮①②③ S1 与 Scan80000 联调
+
+在 Mac 上进入本仓库，使用 SuperMimic 的 `perspmimic` 分支提交 `1459c96` 加载 R3 的有界目标编码。下面的命令把每次联调固定到第 70000 步 EMA，单线程 CPU 设置与实测一致。窗口中的粉色机器人显示 S1 当前参考，实体机器人由冻结 S0 进行物理跟踪。
+
+```bash
+export PYTHONPATH="/Users/black/Workspace/Code/dirl/supermimic${PYTHONPATH:+:$PYTHONPATH}"
+s1s0() {
+  OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+    /Users/black/miniforge3/envs/rw_sim2sim/bin/mjpython sim2sim/supermimic_sim2sim.py \
+    --planner --planner-checkpoint policy/s1_r3_123_w256/ckpt_070000.pt "$@"
+}
+
+s1s0 --terrain-demo climb-top --seed 2       # 76 cm 台面停车目标
+s1s0 --terrain-demo step-top --seed 0        # 35 cm 台面停车目标
+s1s0 --terrain-demo step --seed 0            # 原低台阶，目标在前方 6 m
+s1s0 --terrain-demo climb --seed 0           # 原高台，目标在前方 6 m
+s1s0 --goal 2 0 0 --show-ref --seed 0        # 平地 2 m
+```
+
+两个 `-top` 场景取自停车验证集，各只保存起始姿态（原轨迹第 25 帧，与纯 S1 回放的最后一帧起始历史对齐）、原箱体、实测终点换算出的局部目标和来源。在线模式从零速度复位，以当前地面或台面高度加初始机身净空生成高度目标。裸 `--planner` 默认加载 R2。批量入口 `sim2sim/evaluate_supermimic_terrain.py` 也接受 `--planner-checkpoint`。
+
+在线 planner 默认按同一时刻的机身 XY 偏差平移保留的参考帧，保留原计划的朝向。加 `--planner-reanchor world` 可复现旧版，加 `--planner-reanchor xy-yaw` 可同时对齐实测朝向。
+
+停车判定在 200 Hz 物理步上检查实际双足是否同时支撑在目标台面、实际 XY 误差 < 0.30 m、朝向误差 < 20°、水平速度 < 0.10 m/s。`longest_top_hold_s` 记录最长连续时长，`final_top_hold_s` 记录结束时仍在持续的时长。台面停车的 `task_success` 要求跑满且无越限，最后连续站稳至少 1 秒。单纯终点位姿达标沿用 `goal_reached` 和 `--check` 的原判据。
+
+2026-11-12，五个场景在 `world` 模式下各测种子 0、1、2。原 35 cm 和 76 cm 越障演示各 3/3 完成物理翻越，各 0/3 同时通过终点判据。台面停车目标中，35 cm 为 0/3，76 cm 为 1/3，后者 seed 2 最后连续站稳 9.74 s，终点 XY 误差 0.132 m。[本机逐次结果](sim2sim_output/supermimic/r3_123_070000_20261112/results.md)
+
+同一 R3 权重改用默认 `xy` 后，重复上述三个种子，35 cm 和 76 cm 的台面停车分别通过 2/3 和 3/3，合计由 1/6 提高到 5/6。平地 2 m 和越障后 6 m 的终点验收仍各为 0/3。另一次 60 秒配对试验固定 75 cm 高台、前方 5 m 目标、seed 0 和 Torch CPU 4 线程，两次均完成翻越，R3 在 `world` 和 `xy` 下的最终水平误差分别为 7.88 m 和 0.27 m。
 
 ### 台阶和高台可视化
 

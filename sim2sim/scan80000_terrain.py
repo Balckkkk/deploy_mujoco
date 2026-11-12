@@ -111,7 +111,7 @@ class TrainingHeightMap:
 class TerrainContacts:
     """Detect both feet on the obstacle and their subsequent landings beyond its far edge."""
 
-    def __init__(self, rt, target_xy):
+    def __init__(self, rt, target_xy, *, goal_height=None, goal_error=None):
         self.feet = {rt.model.body(f"{side}_ankle_roll_link").id: i for i, side in enumerate(("left", "right"))}
         self.top_times = [None, None]
         self.landing_times = [None, None]
@@ -125,10 +125,17 @@ class TerrainContacts:
         self.direction = direction / max(np.linalg.norm(direction), 1e-12)
         self.far_edge = max((np.max(polygon @ self.direction) for polygon in self.corners), default=np.inf)
         self.force = np.empty(6)
+        self.goal_tops = {g for g, h in self.tops.items() if goal_height is not None and abs(h - goal_height) < 1e-5}
+        self.goal_on_top = bool(self.goal_tops)
+        self.goal_error = goal_error
+        self.hold_ticks = 0
+        self.final_hold_s = self.longest_hold_s = 0.
+        self.first_hold_s = None
 
     def measure_contacts(self, model, data):
         # After mj_step, contact forces correspond to the beginning of that physics step.
         now = max(0., data.time - model.opt.timestep)
+        supported = 0
         for index, contact in enumerate(data.contact):
             terrain, robot = map(int, contact.geom)
             if robot == self.floor or robot in self.tops:
@@ -140,11 +147,24 @@ class TerrainContacts:
             if self.force[0] <= 1.:
                 continue
             if terrain in self.tops and abs(contact.pos[2] - self.tops[terrain]) < .025:
+                if terrain in self.goal_tops:
+                    supported |= 1 << foot
                 if self.top_times[foot] is None:
                     self.top_times[foot] = now
             elif terrain == self.floor and None not in self.top_times and contact.pos[:2] @ self.direction > self.far_edge:
                 if self.landing_times[foot] is None:
                     self.landing_times[foot] = now
+
+        if self.goal_on_top:
+            steady = False
+            if supported == 3 and np.linalg.norm(data.qvel[:2]) < .10:
+                distance, yaw = self.goal_error(data.qpos)
+                steady = distance < .30 and yaw < 20.
+            self.hold_ticks = self.hold_ticks + 1 if steady else 0
+            self.final_hold_s = self.hold_ticks * model.opt.timestep
+            self.longest_hold_s = max(self.longest_hold_s, self.final_hold_s)
+            if self.first_hold_s is None and self.final_hold_s >= 1.:
+                self.first_hold_s = data.time
 
     @property
     def events(self):

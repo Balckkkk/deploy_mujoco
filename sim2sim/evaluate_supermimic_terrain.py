@@ -55,10 +55,12 @@ def crossing_goal(motion):
             float(np.degrees(np.arctan2(np.sin(heading), np.cos(heading)))))
 
 
-def run_trial(case, seed, seconds, path, no_early_stop=False):
+def run_trial(case, seed, seconds, path, no_early_stop=False, planner_checkpoint=None):
     scene_args = ["--planner", "--motion", str(case.motion)] if case.motion else ["--terrain-demo", case.scene]
     command = [sys.executable, str(RUNNER), *scene_args, "--seed", str(seed),
                "--goal", *map(str, case.goal), "--seconds", str(seconds), "--check", "--metrics-json", str(path)]
+    if planner_checkpoint is not None:
+        command.extend(["--planner-checkpoint", str(planner_checkpoint)])
     if no_early_stop:
         command.append("--no-early-stop")
     if case.height is not None:
@@ -86,9 +88,14 @@ def main():
     parser.add_argument("--seconds", type=float, default=16)
     parser.add_argument("--no-early-stop", action="store_true",
                         help="run each trial to its duration after tracking or terrain coverage failures")
+    parser.add_argument("--planner-checkpoint", type=Path, default=ROOT / "policy/s1_flow_w256/ckpt_045000.pt",
+                        help="S1 EMA checkpoint used for every trial")
     parser.add_argument("--workers", type=int, default=1, help="concurrent CPU trials")
     parser.add_argument("--output", type=Path, help="JSON report path (default under sim2sim_output/supermimic/)")
     args = parser.parse_args()
+    planner_path = args.planner_checkpoint.resolve()
+    if not planner_path.is_file():
+        parser.error(f"Missing S1 checkpoint: {planner_path}")
     if args.workers < 1 or not math.isfinite(args.seconds) or args.seconds < .02:
         parser.error("Expected a positive worker count and a duration of at least 0.02 s")
     if any(not math.isfinite(h) or h < 0 for h in args.heights or []) or any(not math.isfinite(y) for y in args.offsets or []):
@@ -118,7 +125,7 @@ def main():
         args.output = ROOT / "sim2sim_output/supermimic" / name
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(dir=args.output.parent) as tmp, ThreadPoolExecutor(args.workers) as pool:
-        futures = {pool.submit(run_trial, *job, args.seconds, Path(tmp).resolve() / f"{i}.json", args.no_early_stop): i
+        futures = {pool.submit(run_trial, *job, args.seconds, Path(tmp).resolve() / f"{i}.json", args.no_early_stop, planner_path): i
                    for i, job in enumerate(jobs)}
         for count, future in enumerate(as_completed(futures), start=1):
             row = rows[futures[future]] = future.result()
@@ -134,13 +141,14 @@ def main():
                                 median_final_xy_error_m=median(r["final_xy_error_m"] for r in group),
                                 trials_with_violation=sum(bool(r["first_violation_s"]) for r in group),
                                 stopped_early=sum(r["stop"] != "duration" for r in group)))
-        checkpoints = ["policy/scan80000/model_80000.pt", "policy/s1_flow_w256/ckpt_045000.pt"]
+        planner_label = str(planner_path.relative_to(ROOT) if planner_path.is_relative_to(ROOT) else planner_path)
+        checkpoints = ["policy/scan80000/model_80000.pt", planner_label]
         report = dict(seeds=seeds, requested_seconds=args.seconds, no_early_stop=args.no_early_stop,
                       goal_protocol="through obstacle center, 1.2 m beyond the far edge" if args.heldout_dataset else "6 m forward, final yaw 0",
                       checkpoint_sha256={p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest() for p in checkpoints},
                       scoring={"crossed": "Both feet on top, then both supported on floor beyond the far edge; null on flat control.",
                                "goal_reached": "Full duration without tracking/map failure, final XY < 0.30 m and yaw error < 20 deg.",
-                               "task_success": "Goal reached and obstacle crossed (goal alone on flat control)."},
+                               "task_success": "Goal reached and obstacle crossed; on a platform goal, finish with a bilateral 1 s hold. Goal alone on flat control."},
                       summary=summary, trials=rows)
         finished = Path(tmp) / "report.json"
         finished.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
